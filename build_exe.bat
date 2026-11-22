@@ -15,7 +15,7 @@ echo [2/4] Verifying Python environment...
 python --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Python not found in PATH!
-    pause
+    if "%~1"=="" pause
     exit /b 1
 )
 
@@ -29,7 +29,7 @@ if errorlevel 1 (
     echo ===================================================
     echo [ERROR] PyInstaller build failed! Check output above.
     echo ===================================================
-    pause
+    if "%~1"=="" pause
     exit /b 1
 )
 
@@ -44,4 +44,4 @@ if exist "dist\GlassWidgets.exe" (
     echo [ERROR] Build output missing!
 )
 
-pause
+if "%~1"=="" pause
