@@ -1,0 +1,4 @@
+module org.kde.kirigami
+singleton Units 2.0 Units.qml
+Icon 2.0 Icon.qml
+Separator 2.0 Separator.qml

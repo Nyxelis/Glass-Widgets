@@ -1,0 +1,5 @@
+module org.kde.plasma.core
+Action 2.0 Action.qml
+IconItem 2.0 IconItem.qml
+Svg 2.0 Svg.qml
+FrameSvgItem 2.0 FrameSvgItem.qml

@@ -1,0 +1,911 @@
+import QtQuick
+import QtQuick.Layouts
+import org.kde.plasma.plasmoid
+import org.kde.plasma.core as PlasmaCore
+import org.kde.plasma.workspace.calendar 2.0 as PlasmaCalendar
+import org.kde.plasma.plasma5support as P5Support
+import "components"
+import "widget"
+
+PlasmoidItem {
+    id: root
+
+    Plasmoid.backgroundHints: PlasmaCore.Types.NoBackground
+    preferredRepresentation: fullRepresentation
+
+    WidgetActions { id: commonActions }
+
+    // Runs a shell command and discards the result.
+    P5Support.DataSource {
+        id: launcher
+        engine: "executable"
+        connectedSources: []
+        onNewData: (source, data) => disconnectSource(source)
+        function run(cmd) { connectSource(cmd) }
+    }
+
+    PlasmaCore.Action {
+        id: openCalendarAction
+        text: i18n("Open Calendar")
+        icon.name: "view-calendar"
+        onTriggered: launcher.run("kstart --application org.kde.merkuro.calendar || kstart --application org.kde.korganizer")
+    }
+    PlasmaCore.Action {
+        id: newEventAction
+        text: i18n("New Event…")
+        icon.name: "appointment-new"
+        // Starts KOrganizer if needed, waits for its D-Bus name, then opens the editor.
+        onTriggered: launcher.run("sh -c 'dbus-send --session --dest=org.freedesktop.DBus --print-reply --type=method_call /org/freedesktop/DBus org.freedesktop.DBus.NameHasOwner string:org.kde.korganizer | grep -q true || { kstart --application org.kde.korganizer; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do sleep 1; dbus-send --session --dest=org.freedesktop.DBus --print-reply --type=method_call /org/freedesktop/DBus org.freedesktop.DBus.NameHasOwner string:org.kde.korganizer | grep -q true && break; done; }; dbus-send --session --type=method_call --dest=org.kde.korganizer /Calendar org.kde.Korganizer.Calendar.openEventEditor'")
+    }
+    PlasmaCore.Action {
+        id: manageCalendarsAction
+        text: i18n("Manage Calendars…")
+        icon.name: "configure"
+        onTriggered: launcher.run("kstart --application org.kde.akonadi.configdialog")
+    }
+    Plasmoid.contextualActions: [openCalendarAction, newEventAction, manageCalendarsAction].concat(commonActions.list)
+
+    MacOSColors {
+        id: colors
+        styleMode: plasmoid.configuration.styleMode
+        appearance: plasmoid.configuration.appearance
+    }
+
+    FontLoader {
+        id: sfRegular
+        source: Qt.resolvedUrl("../fonts/sf_pro_display_regular.otf")
+    }
+
+    // --- Date state ---
+    property date today: new Date()
+    property int viewYear: today.getFullYear()
+    property int viewMonth: today.getMonth() // 0..11
+    property int selectedDay: -1
+    property var eventDaysForMonth: []
+
+    function refreshEventDays() {
+        if (typeof calendarBackendService !== "undefined" && calendarBackendService) {
+            eventDaysForMonth = calendarBackendService.getEventDaysForMonth(viewYear, viewMonth + 1);
+        }
+    }
+
+    function prevMonth() {
+        selectedDay = -1;
+        if (viewMonth === 0) {
+            viewYear--;
+            viewMonth = 11;
+        } else {
+            viewMonth--;
+        }
+    }
+
+    function nextMonth() {
+        selectedDay = -1;
+        if (viewMonth === 11) {
+            viewYear++;
+            viewMonth = 0;
+        } else {
+            viewMonth++;
+        }
+    }
+
+    // First day of week: 0 = Sunday, 1 = Monday
+    readonly property int firstDow: plasmoid.configuration.firstDayOfWeek
+
+    readonly property var monthNames: ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+    readonly property var weekdayShortSun: ["S", "M", "T", "W", "T", "F", "S"]
+    readonly property var weekdayShortMon: ["M", "T", "W", "T", "F", "S", "S"]
+    readonly property var weekdayShort: firstDow === 1 ? weekdayShortMon : weekdayShortSun
+
+    // Column [0..6] → is this a Sat/Sun column, given the current firstDow?
+    function isWeekendCol(col) {
+        return firstDow === 1 ? (col === 5 || col === 6) // Mon-first: cols 5,6 = Sat,Sun
+        : (col === 0 || col === 6); // Sun-first: cols 0,6 = Sun,Sat
+    }
+
+    // Precomputed day-of-month per grid slot [0..41]; 0 means empty.
+    property var monthDays: []
+    function rebuildMonthDays() {
+        const firstOfMonth = new Date(viewYear, viewMonth, 1);
+        let offset = firstOfMonth.getDay() - firstDow;
+        if (offset < 0)
+            offset += 7;
+        const lastDay = new Date(viewYear, viewMonth + 1, 0).getDate();
+        const out = new Array(42);
+        for (let i = 0; i < 42; i++) {
+            const day = i - offset + 1;
+            out[i] = (day < 1 || day > lastDay) ? 0 : day;
+        }
+        monthDays = out;
+    }
+    onViewYearChanged: {
+        rebuildMonthDays();
+        _syncCalendarBackends();
+        refreshEventDays();
+        _scheduleRebuildEvents();
+    }
+    onViewMonthChanged: {
+        rebuildMonthDays();
+        _syncCalendarBackends();
+        refreshEventDays();
+        _scheduleRebuildEvents();
+    }
+    onFirstDowChanged: rebuildMonthDays()
+    Component.onCompleted: {
+        rebuildMonthDays();
+        scheduleNextMidnight();
+        refreshEventDays();
+        // Delay initial event load so all three Calendar backends finish their
+        // Component.onCompleted (setPluginsManager + goToYearAndMonth) first.
+        initialLoadTimer.start();
+    }
+
+    Timer {
+        id: initialLoadTimer
+        interval: 500
+        repeat: false
+        onTriggered: root._scheduleRebuildEvents()
+    }
+
+    // Midnight rollover
+    Timer {
+        id: midnightTimer
+        repeat: false
+        onTriggered: {
+            const n = new Date();
+            root.today = n;
+            if (n.getFullYear() !== root.viewYear)
+                root.viewYear = n.getFullYear();
+            if (n.getMonth() !== root.viewMonth)
+                root.viewMonth = n.getMonth();
+            root.scheduleNextMidnight();
+            root._scheduleRebuildEvents();
+        }
+    }
+    function scheduleNextMidnight() {
+        const now = new Date();
+        const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+        midnightTimer.interval = Math.max(1000, next.getTime() - now.getTime());
+        midnightTimer.start();
+    }
+
+    // --- Event lookahead preset ---
+    readonly property var _lookaheadPresets: [7, 14, 30, 60]
+    readonly property int effectiveLookahead: {
+        var idx = plasmoid.configuration.eventLookaheadDays;
+        return (idx >= 0 && idx < _lookaheadPresets.length) ? _lookaheadPresets[idx] : 30;
+    }
+    onEffectiveLookaheadChanged: _scheduleRebuildEvents()
+
+    // --- Plasma Calendar backends ---
+    PlasmaCalendar.EventPluginsManager {
+        id: eventPluginsManager
+        enabledPlugins: plasmoid.configuration.enabledCalendarPlugins
+        onPluginsChanged: {
+            // Plugins take a moment to load and push data into the backends.
+            // Use the longer initialLoadTimer so we don't query before data arrives.
+            initialLoadTimer.restart();
+        }
+    }
+
+    // Current-month backend (also tracks viewYear/viewMonth for the grid)
+    PlasmaCalendar.Calendar {
+        id: calendarBackend
+        days: 7
+        weeks: 6
+        firstDayOfWeek: root.firstDow
+        today: root.today
+        Component.onCompleted: {
+            daysModel.setPluginsManager(eventPluginsManager);
+        }
+    }
+
+    // Next-month backend for lookahead spanning the month boundary
+    PlasmaCalendar.Calendar {
+        id: nextMonthBackend
+        days: 7
+        weeks: 6
+        firstDayOfWeek: root.firstDow
+        today: root.today
+        Component.onCompleted: {
+            daysModel.setPluginsManager(eventPluginsManager);
+            var d = new Date(root.viewYear, root.viewMonth + 1, 1);
+            goToYearAndMonth(d.getFullYear(), d.getMonth() + 1);
+        }
+    }
+
+    // Third backend: covers the month after next (for 60-day lookahead starting late in a month)
+    PlasmaCalendar.Calendar {
+        id: thirdMonthBackend
+        days: 7
+        weeks: 6
+        firstDayOfWeek: root.firstDow
+        today: root.today
+        Component.onCompleted: {
+            daysModel.setPluginsManager(eventPluginsManager);
+            var d = new Date(root.viewYear, root.viewMonth + 2, 1);
+            goToYearAndMonth(d.getFullYear(), d.getMonth() + 1);
+        }
+    }
+
+    function _syncCalendarBackends() {
+        var d1 = new Date(viewYear, viewMonth + 1, 1);
+        nextMonthBackend.goToYearAndMonth(d1.getFullYear(), d1.getMonth() + 1);
+        var d2 = new Date(viewYear, viewMonth + 2, 1);
+        thirdMonthBackend.goToYearAndMonth(d2.getFullYear(), d2.getMonth() + 1);
+    }
+
+    // Pick the right DaysModel for a given date
+    function _daysModelForDate(d) {
+        var m = d.getMonth();
+        var y = d.getFullYear();
+        if (y === viewYear && m === viewMonth) return calendarBackend.daysModel;
+        var nextD = new Date(viewYear, viewMonth + 1, 1);
+        if (y === nextD.getFullYear() && m === nextD.getMonth()) return nextMonthBackend.daysModel;
+        return thirdMonthBackend.daysModel;
+    }
+
+    Connections {
+        target: calendarBackend.daysModel
+        function onAgendaUpdated() { root._scheduleRebuildEvents(); }
+    }
+    Connections {
+        target: nextMonthBackend.daysModel
+        function onAgendaUpdated() { root._scheduleRebuildEvents(); }
+    }
+    Connections {
+        target: thirdMonthBackend.daysModel
+        function onAgendaUpdated() { root._scheduleRebuildEvents(); }
+    }
+    Connections {
+        target: typeof calendarBackendService !== "undefined" ? calendarBackendService : null
+        function onEventsChanged() {
+            root.refreshEventDays();
+            root._scheduleRebuildEvents();
+        }
+    }
+
+    // Debounce rapid re-build signals
+    Timer {
+        id: rebuildDebounce
+        interval: 80
+        repeat: false
+        onTriggered: root._doRebuildEventsModel()
+    }
+    function _scheduleRebuildEvents() {
+        rebuildDebounce.restart();
+    }
+
+    // --- Flat events model (section headers + event cards) ---
+    ListModel {
+        id: eventsModel
+    }
+
+    // Fallback pill colors by event type when the collection has no color set.
+    // These are matched against EventDataDecorator.eventType (strings from libcalendarplugin.so).
+    readonly property var _eventTypeColors: ({
+        "Event":    "#4B9EFF",   // blue  — calendar events
+        "Todo":     "#FF9500",   // orange — tasks / todos
+        "Journal":  "#34C759",   // green  — journal entries
+        "Holiday":  "#FF6B6B"    // red    — public holidays
+    })
+
+    function _pillColorFor(ev) {
+        var c = ev.eventColor ? ev.eventColor.toString() : "";
+        if (c.length > 0 && c !== "#000000" && c !== "#00000000") return c;
+        var tc = _eventTypeColors[ev.eventType];
+        return tc ? tc : "#0a84ff";
+    }
+
+    function _formatTime(ev) {
+        if (ev.isAllDay) return i18n("All day");
+        return Qt.formatDateTime(ev.startDateTime, "h:mm AP");
+    }
+
+    function _formatWeekDate(d) {
+        return Qt.formatDateTime(d, "ddd d");
+    }
+
+    function _formatUpcomingDate(d) {
+        return Qt.formatDateTime(d, "MMM d");
+    }
+
+    function _doRebuildEventsModel() {
+        eventsModel.clear();
+
+        // 1. If a specific day is selected on the grid, show events for that day
+        if (root.selectedDay > 0) {
+            var selDate = new Date(root.viewYear, root.viewMonth, root.selectedDay);
+            var selDm = _daysModelForDate(selDate);
+            var selEventsRaw = selDm.eventsForDate(selDate);
+            var selHeader = root.monthNames[root.viewMonth] + " " + root.selectedDay;
+            eventsModel.append({
+                isHeader: true,
+                title: selHeader,
+                pillColor: "",
+                timeLabel: "",
+                isAllDay: false,
+                eventId: -1
+            });
+            if (selEventsRaw && selEventsRaw.length > 0) {
+                for (var si = 0; si < selEventsRaw.length; si++) {
+                    var sev = selEventsRaw[si];
+                    eventsModel.append({
+                        isHeader: false,
+                        title: sev.title,
+                        pillColor: _pillColorFor(sev),
+                        isAllDay: sev.isAllDay,
+                        timeLabel: _formatTime(sev),
+                        eventId: sev.id !== undefined ? sev.id : -1
+                    });
+                }
+            } else {
+                eventsModel.append({
+                    isHeader: false,
+                    title: i18n("No events on this day"),
+                    pillColor: "#71717a",
+                    isAllDay: false,
+                    timeLabel: "",
+                    eventId: -1
+                });
+            }
+            return;
+        }
+
+        var now = root.today;
+        var todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+        // End of current week (exclusive): the first day of next week
+        var weekEndDay = todayStart.getDay(); // 0=Sun..6=Sat
+        var daysUntilNextWeek;
+        if (firstDow === 1) {
+            // Mon-first: last day = Sun (0), next week starts Mon
+            daysUntilNextWeek = weekEndDay === 0 ? 1 : (8 - weekEndDay);
+        } else {
+            // Sun-first: last day = Sat (6), next week starts Sun
+            daysUntilNextWeek = weekEndDay === 0 ? 7 : (7 - weekEndDay);
+        }
+        var weekEnd = new Date(todayStart.getTime() + daysUntilNextWeek * 86400000);
+
+        var lookaheadEnd = new Date(todayStart.getTime() + effectiveLookahead * 86400000);
+
+        var todayEvents = [];
+        var weekEvents = [];
+        var upcomingEvents = [];
+        var seen = {};
+
+        for (var d = new Date(todayStart); d < lookaheadEnd; d = new Date(d.getTime() + 86400000)) {
+            var dm = _daysModelForDate(d);
+            var rawEvents = dm.eventsForDate(d);
+            if (!rawEvents || rawEvents.length === 0) continue;
+
+            // QVariantList → JS array so we can sort
+            var events = [];
+            for (var ei = 0; ei < rawEvents.length; ei++) events.push(rawEvents[ei]);
+
+            events.sort(function(a, b) {
+                if (a.isAllDay && !b.isAllDay) return -1;
+                if (!a.isAllDay && b.isAllDay) return 1;
+                return a.startDateTime.getTime() - b.startDateTime.getTime();
+            });
+
+            for (var i = 0; i < events.length; i++) {
+                var ev = events[i];
+                // Deduplicate multi-day events
+                var key = ev.title + "|" + ev.startDateTime.getTime();
+                if (seen[key]) continue;
+                seen[key] = true;
+
+                var entry = {
+                    isHeader: false,
+                    title: ev.title,
+                    pillColor: _pillColorFor(ev),
+                    isAllDay: ev.isAllDay,
+                    timeLabel: "",
+                    eventId: ev.id !== undefined ? ev.id : -1
+                };
+
+                var dTime = d.getTime();
+                var todayTime = todayStart.getTime();
+
+                if (dTime === todayTime) {
+                    entry.timeLabel = _formatTime(ev);
+                    todayEvents.push(entry);
+                } else if (d < weekEnd) {
+                    entry.timeLabel = _formatWeekDate(d);
+                    weekEvents.push(entry);
+                } else {
+                    entry.timeLabel = _formatUpcomingDate(d);
+                    upcomingEvents.push(entry);
+                }
+            }
+        }
+
+        if (todayEvents.length > 0) {
+            eventsModel.append({ isHeader: true, title: i18n("Events today"), pillColor: "", timeLabel: "", isAllDay: false, eventId: -1 });
+            for (var ti = 0; ti < todayEvents.length; ti++) eventsModel.append(todayEvents[ti]);
+        }
+        if (weekEvents.length > 0) {
+            eventsModel.append({ isHeader: true, title: i18n("This week"), pillColor: "", timeLabel: "", isAllDay: false, eventId: -1 });
+            for (var wi = 0; wi < weekEvents.length; wi++) eventsModel.append(weekEvents[wi]);
+        }
+        if (upcomingEvents.length > 0) {
+            eventsModel.append({ isHeader: true, title: i18n("Upcoming"), pillColor: "", timeLabel: "", isAllDay: false, eventId: -1 });
+            for (var ui = 0; ui < upcomingEvents.length; ui++) eventsModel.append(upcomingEvents[ui]);
+        }
+    }
+
+    fullRepresentation: Item {
+        id: full
+        Layout.preferredWidth:  full.width  > 0 ? full.width  : 300
+        Layout.preferredHeight: full.height > 0 ? full.height : 300
+        Layout.minimumWidth: 160
+        Layout.minimumHeight: 160
+
+        readonly property bool isWide: full.width >= full.height * 2
+
+        // Type scale. Either everything grows with the widget (the original
+        // behaviour, kept as the default) or the sizes are pinned to what the
+        // user configured.
+        //
+        // Pinning is the point of the option: the event list is a ListView
+        // filling the left panel, so once its text stops growing with the
+        // widget, making the widget taller fits *more* cards instead of the
+        // same few, larger. The paddings below have to be pinned along with
+        // the text or they eat the space the extra cards would have used.
+        readonly property bool autoFont: plasmoid.configuration.autoFontSize
+
+        // Grid, dialogs and tooltips.
+        readonly property real labelSize: autoFont
+            ? Math.max(10, Math.round(full.height * 0.058))
+            : plasmoid.configuration.gridFontSize
+        // Event card text.
+        readonly property real eventSize: autoFont
+            ? Math.max(10, Math.round(full.height * 0.052))
+            : plasmoid.configuration.eventFontSize
+        // Section headers sit a touch above the card text. The 1.12 ratio
+        // reproduces the old 0.058/0.052 relationship, so auto mode renders
+        // as it always did.
+        readonly property real eventHeaderSize: Math.round(full.eventSize * 1.12)
+
+        readonly property real wideGap: autoFont
+            ? Math.round(full.height * 0.04)
+            : Math.round(full.labelSize * 0.69)
+
+        LiquidGlass {
+            id: glass
+            anchors.fill: parent
+            radius: plasmoid.configuration.cornerRadius
+            roundness: plasmoid.configuration.roundnessX10 / 10
+            refractThickness: plasmoid.configuration.refractThickness
+            refractIOR: plasmoid.configuration.refractIORx100 / 100
+            refractScale: plasmoid.configuration.refractScale
+            tint: colors.glassTint
+            tintAlpha: plasmoid.configuration.tintAlphaPct / 100
+            chromaStrength: plasmoid.configuration.chromaStrengthPct / 100
+            specStrength: plasmoid.configuration.specStrengthPct / 100
+            blurRadius: plasmoid.configuration.blurRadiusPx
+            blurAlgorithm: plasmoid.configuration.blurAlgorithm
+            realtimeRefraction: plasmoid.configuration.realtimeRefraction
+            fallbackOpacity: colors.glassFallbackOpacity
+            solidMode: colors.isSolid
+            solidColor: colors.solidBackground
+        }
+
+        // ── Left panel: Events (wide mode only) ───────────────────────────
+        Item {
+            id: leftPanel
+            visible: full.isWide
+            anchors {
+                top: parent.top
+                left: parent.left
+                bottom: parent.bottom
+                right: rightPanel.left
+                rightMargin: full.wideGap
+            }
+
+            readonly property real _cardSize: full.eventSize
+            readonly property real _margin: full.autoFont
+                ? Math.round(full.height * 0.09)
+                : Math.round(full.eventSize * 1.73)
+            readonly property real _cardSpacing: full.autoFont
+                ? Math.round(full.height * 0.025)
+                : Math.round(full.eventSize * 0.48)
+
+            // Empty state
+            Text {
+                anchors.centerIn: parent
+                visible: eventsModel.count === 0
+                text: i18n("No upcoming events")
+                color: colors.foreground
+                font.family: sfRegular.name
+                font.pixelSize: full.eventHeaderSize
+                font.weight: Font.Normal
+                opacity: 0.45
+                horizontalAlignment: Text.AlignHCenter
+            }
+
+            // Section headers + event cards
+            ListView {
+                id: eventsList
+                anchors {
+                    top: parent.top
+                    left: parent.left
+                    right: parent.right
+                    bottom: parent.bottom
+                    topMargin: leftPanel._margin
+                    leftMargin: leftPanel._margin
+                    rightMargin: leftPanel._margin
+                    bottomMargin: leftPanel._margin
+                }
+                visible: eventsModel.count > 0
+                model: eventsModel
+                spacing: leftPanel._cardSpacing
+                clip: true
+                interactive: contentHeight > height
+
+                delegate: Item {
+                    width: eventsList.width
+                    height: loader.height
+
+                    Loader {
+                        id: loader
+                        width: parent.width
+                        sourceComponent: model.isHeader ? sectionHeaderComponent : eventCardComponent
+                        onLoaded: {
+                            if (model.isHeader) {
+                                item.headerTitle = model.title;
+                                item.isFirstHeader = (index === 0);
+                            } else {
+                                item.cardTitle = model.title;
+                                item.cardTime = model.timeLabel;
+                                item.cardPill = model.pillColor;
+                                item.cardEventId = model.eventId !== undefined ? model.eventId : -1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            Component {
+                id: sectionHeaderComponent
+                Item {
+                    property string headerTitle: ""
+                    property bool isFirstHeader: false
+
+                    width: eventsList.width
+                    height: Math.round(full.eventHeaderSize * 1.4) + topPadding
+                    readonly property real topPadding: isFirstHeader ? 0 : leftPanel._cardSpacing
+
+                    Text {
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: headerTitle
+                        textFormat: Text.PlainText
+                        color: colors.foreground
+                        font.family: sfRegular.name
+                        font.pixelSize: full.eventHeaderSize
+                        font.weight: Font.Normal
+                        opacity: 0.75
+                        font.letterSpacing: 0.5
+                    }
+
+                    // Reset filter pill if viewing selected day
+                    Rectangle {
+                        visible: root.selectedDay > 0
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        height: Math.round(full.eventHeaderSize * 1.3)
+                        width: resetFilterText.implicitWidth + 12
+                        radius: height / 2
+                        color: filterMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.2) : Qt.rgba(1, 1, 1, 0.1)
+
+                        Text {
+                            id: resetFilterText
+                            anchors.centerIn: parent
+                            text: "Show All"
+                            color: colors.foreground
+                            font.family: sfRegular.name
+                            font.pixelSize: Math.round(full.eventHeaderSize * 0.8)
+                        }
+
+                        MouseArea {
+                            id: filterMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                root.selectedDay = -1;
+                                root._scheduleRebuildEvents();
+                            }
+                        }
+                    }
+                }
+            }
+
+            Component {
+                id: eventCardComponent
+                EventCard {
+                    property string cardTitle: ""
+                    property string cardTime: ""
+                    property string cardPill: ""
+                    property int cardEventId: -1
+
+                    width: parent ? parent.width : 0
+                    eventId: cardEventId
+                    title: cardTitle
+                    timeLabel: cardTime
+                    pillColor: cardPill
+                    textColor: colors.foreground
+                    fontFamily: sfRegular.name
+                    fontSize: leftPanel._cardSize
+                    cardBg: colors.cardBackground
+                    cardBgOpacity: colors.cardBackgroundOpacity
+                }
+            }
+        }
+
+        // ── Right panel: Calendar grid ────────────────────────────────────
+        Item {
+            id: rightPanel
+            width: full.isWide ? full.height : full.width
+            anchors {
+                top: parent.top
+                right: parent.right
+                bottom: parent.bottom
+            }
+        }
+
+        ColumnLayout {
+            parent: rightPanel
+            anchors.fill: parent
+            anchors.margins: Math.round(full.height * 0.09)
+            anchors.topMargin: Math.round(full.height * 0.14)
+            spacing: Math.max(8, Math.round(full.height * 0.03))
+
+            // --- Month header ---
+            Item {
+                Layout.fillWidth: true
+                Layout.preferredHeight: full.labelSize * 1.5
+
+                TextMetrics {
+                    id: sMetrics
+                    font.family: sfRegular.name
+                    font.pixelSize: full.labelSize
+                    text: root.weekdayShort[0]
+                }
+
+                Text {
+                    x: parent.width / 7 / 2 - sMetrics.width / 2
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: root.monthNames[root.viewMonth].toUpperCase()
+                    color: colors.todayAccent
+                    font.family: sfRegular.name
+                    font.pixelSize: full.labelSize
+                    font.weight: Font.Normal
+                    font.letterSpacing: 1
+                }
+
+                // Month navigation and Add Event (+) button
+                Row {
+                    anchors.right: parent.right
+                    anchors.rightMargin: 6
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: Math.max(4, Math.round(full.labelSize * 0.4))
+
+                    // Previous month
+                    Rectangle {
+                        width: Math.round(full.labelSize * 1.5)
+                        height: width
+                        radius: width / 2
+                        color: prevMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.15) : "transparent"
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "‹"
+                            color: colors.foreground
+                            font.pixelSize: full.labelSize * 1.1
+                            opacity: 0.75
+                        }
+                        MouseArea {
+                            id: prevMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.prevMonth()
+                        }
+                    }
+
+                    // Next month
+                    Rectangle {
+                        width: Math.round(full.labelSize * 1.5)
+                        height: width
+                        radius: width / 2
+                        color: nextMouse.containsMouse ? Qt.rgba(1, 1, 1, 0.15) : "transparent"
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "›"
+                            color: colors.foreground
+                            font.pixelSize: full.labelSize * 1.1
+                            opacity: 0.75
+                        }
+                        MouseArea {
+                            id: nextMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.nextMonth()
+                        }
+                    }
+
+                    // Add Event (+) button
+                    Rectangle {
+                        id: addBtn
+                        width: Math.round(full.labelSize * 1.5)
+                        height: width
+                        radius: width / 2
+                        color: addMouse.containsMouse ? colors.todayAccent : Qt.rgba(1, 1, 1, 0.12)
+                        Behavior on color { ColorAnimation { duration: 150 } }
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "+"
+                            color: addMouse.containsMouse ? "#ffffff" : colors.foreground
+                            font.pixelSize: full.labelSize * 1.1
+                            font.weight: Font.DemiBold
+                        }
+                        MouseArea {
+                            id: addMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                var dayToUse = root.selectedDay > 0 ? root.selectedDay : root.today.getDate();
+                                addEventDialog.openForDate(root.viewYear, root.viewMonth + 1, dayToUse);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // --- Weekday header (S M T W T F S) ---
+            Item {
+                Layout.fillWidth: true
+                Layout.preferredHeight: full.labelSize * 1.4
+
+                Row {
+                    anchors.fill: parent
+                    Repeater {
+                        model: 7
+                        delegate: Item {
+                            width: parent.width / 7
+                            height: parent.height
+                            Text {
+                                anchors.centerIn: parent
+                                text: root.weekdayShort[index]
+                                color: colors.foreground
+                                opacity: root.isWeekendCol(index) ? 0.45 : 0.75
+                                font.family: sfRegular.name
+                                font.pixelSize: full.labelSize
+                                font.weight: Font.Normal
+                            }
+                        }
+                    }
+                }
+            }
+
+            // --- Day grid: 6 rows × 7 columns ---
+            Item {
+                id: gridWrap
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+
+                readonly property real cellW: width / 7
+                readonly property real cellH: height / 6
+                readonly property real badgeDiameter: Math.min(cellW, cellH) * 1.02
+
+                Grid {
+                    id: dayGrid
+                    anchors.fill: parent
+                    rows: 6
+                    columns: 7
+
+                    Repeater {
+                        model: 42
+                        delegate: Item {
+                            width: gridWrap.cellW
+                            height: gridWrap.cellH
+
+                            readonly property int day: root.monthDays[index] || 0
+                            readonly property bool empty: day === 0
+                            readonly property bool isCurrent: !empty && day === root.today.getDate() && root.viewMonth === root.today.getMonth() && root.viewYear === root.today.getFullYear()
+                            readonly property bool isSelected: !empty && day === root.selectedDay && !isCurrent
+                            readonly property bool isWeekend: root.isWeekendCol(index % 7)
+                            readonly property bool hasEvent: !empty && root.eventDaysForMonth.indexOf(day) !== -1
+
+                            // Selected day accent highlight
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: Math.min(parent.width, parent.height) * 0.85
+                                height: width
+                                radius: width / 2
+                                color: Qt.rgba(1, 1, 1, 0.12)
+                                border.color: colors.todayAccent
+                                border.width: 1.5
+                                visible: isSelected
+                            }
+
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.verticalCenterOffset: hasEvent ? -Math.max(2, Math.round(full.labelSize * 0.15)) : 0
+                                visible: !empty && !isCurrent
+                                text: day
+                                color: colors.foreground
+                                opacity: isWeekend ? 0.45 : 1.0
+                                font.family: sfRegular.name
+                                font.pixelSize: full.labelSize
+                                font.weight: isSelected ? Font.Medium : Font.Normal
+                            }
+
+                            TodayBadge {
+                                anchors.centerIn: parent
+                                width: parent.width + gridWrap.badgeDiameter * 0.30
+                                height: parent.height + gridWrap.badgeDiameter * 0.30
+                                visible: isCurrent
+                                contentRect: Qt.rect((width - parent.width) / 2, (height - parent.height) / 2, parent.width, parent.height)
+                                dayNumber: day
+                                diameter: gridWrap.badgeDiameter
+                                circleXOffset: full.labelSize * 0.04
+                                circleYOffset: -full.labelSize * 0.05
+                                fontPixelSize: full.labelSize
+                                fontFamily: sfRegular.name
+                                badgeColor: colors.todayAccent
+                                textColor: "#ffffff"
+                                punchOutText: colors.punchOutText
+                            }
+
+                            // Event presence indicator dot
+                            Rectangle {
+                                visible: hasEvent
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                anchors.bottom: parent.bottom
+                                anchors.bottomMargin: Math.max(2, Math.round(gridWrap.cellH * 0.10))
+                                width: Math.max(3, Math.round(full.labelSize * 0.28))
+                                height: width
+                                radius: width / 2
+                                color: isCurrent ? "#ffffff" : colors.todayAccent
+                            }
+
+                            // Day click interaction: select/filter day
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: empty ? Qt.ArrowCursor : Qt.PointingHandCursor
+                                enabled: !empty
+                                onClicked: {
+                                    if (root.selectedDay === day) {
+                                        root.selectedDay = -1;
+                                    } else {
+                                        root.selectedDay = day;
+                                    }
+                                    root._scheduleRebuildEvents();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add Event Dialog modal overlay
+        AddEventDialog {
+            id: addEventDialog
+            z: 99
+            onEventSaved: {
+                root.refreshEventDays();
+                root._scheduleRebuildEvents();
+            }
+        }
+    }
+}

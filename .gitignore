@@ -1,0 +1,53 @@
+# =====================================================================
+# GlassWidgets - Git Ignore Configuration
+# =====================================================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+# PyInstaller / Distribution / Build outputs
+build/
+dist/
+*.manifest
+*.spec.bak
+*.exe
+
+# Local runtime data & user configs
+data/
+*.db
+*.db-journal
+*.sqlite
+weather_cache.json
+lyrics_cache.json
+config.json
+layout.json
+.write_test
+
+# Debug logs & screenshots
+*.log
+wallpaper_debug.png
+debug_*.png
+test_output/
+
+# Windows system files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# IDE / Editor configuration
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
