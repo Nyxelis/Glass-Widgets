@@ -68,15 +68,13 @@
 
 ## 📸 Screenshots
 
-<!-- Replace these placeholders with actual screenshots from your desktop -->
+<p align="center">
+  <img src="screenshots/desktop_ui.png" alt="GlassWidgets Desktop Overview" width="100%" />
+</p>
 
-| Glass Desktop Layout | Music Player & Synced Lyrics |
-|:---:|:---:|
-| ![Desktop Overview Placeholder](https://via.placeholder.com/600x380/1a1b1e/ffffff?text=GlassWidgets+Desktop+Layout) | ![Music Player Placeholder](https://via.placeholder.com/600x380/1a1b1e/ffffff?text=Music+Player+%26+Lyrics) |
-
-| Weather Forecast & Calendar | GlassWidgets Manager UI |
-|:---:|:---:|
-| ![Weather and Calendar Placeholder](https://via.placeholder.com/600x380/1a1b1e/ffffff?text=Weather+%26+Calendar+Widgets) | ![Manager UI Placeholder](https://via.placeholder.com/600x380/1a1b1e/ffffff?text=GlassWidgets+Manager+Window) |
+| Music Player & Synced Lyrics | Calendar Widget | Digital Clock Widget |
+|:---:|:---:|:---:|
+| <img src="screenshots/music_player.png" alt="Music Player & Synced Lyrics" width="300" /> | <img src="screenshots/calendar.png" alt="Calendar Widget" width="300" /> | <img src="screenshots/digital_clock.png" alt="Digital Clock Widget" width="300" /> |
 
 ---
 
@@ -84,7 +82,7 @@
 
 ### Method 1: Installer (Recommended for Users)
 
-1. Head to the **[Releases](https://github.com/glasswidgets/widgets/releases)** page.
+1. Head to the **[Releases](https://github.com/Nyxelis/Glass-Widgets/releases)** page.
 2. Download the latest `GlassWidgets_Setup.exe`.
 3. Run the installer and follow the setup wizard.
 
