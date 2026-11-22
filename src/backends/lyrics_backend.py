@@ -54,7 +54,7 @@ class LyricsCache:
         self._save()
 
 def query_lrclib(artist: str, track: str, album: str = "", duration_sec: float = 0.0) -> dict:
-    headers = {"User-Agent": "GlassWidgets/1.0 (https://github.com/glasswidgets/widgets)"}
+    headers = {"User-Agent": "GlassWidgets/1.0 (https://github.com/Nyxelis/Glass-Widgets)"}
     dur_int = int(round(duration_sec)) if duration_sec > 0 else 0
     ssl_ctx = ssl.create_default_context()
 

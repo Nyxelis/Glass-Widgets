@@ -103,8 +103,8 @@
 #### Setup
 ```bat
 # 1. Clone the repository
-git clone https://github.com/glasswidgets/widgets.git
-cd widgets
+git clone https://github.com/Nyxelis/Glass-Widgets.git
+cd Glass-Widgets
 
 # 2. Install dependencies
 pip install -r requirements.txt
