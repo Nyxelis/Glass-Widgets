@@ -714,55 +714,224 @@ ApplicationWindow {
                             color: "#18181d"
                             border.color: "#282830"
                             border.width: 1
-                            implicitHeight: addWidgetRow.implicitHeight + 20
+                            implicitHeight: addWidgetCol.implicitHeight + 24
 
-                            RowLayout {
-                                id: addWidgetRow
+                            ColumnLayout {
+                                id: addWidgetCol
                                 anchors.fill: parent
-                                anchors.margins: 12
+                                anchors.margins: 14
                                 spacing: 12
 
-                                Text {
-                                    text: "✨ Add Widget:"
-                                    color: "#ffffff"
-                                    font.bold: true
-                                    font.pixelSize: 12
-                                }
+                                // Row 1: Dropdown Template Selector + Add Button
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 12
 
-                                ComboBox {
-                                    id: templateCombo
-                                    model: widgetManagerService.availableTemplates
-                                    textRole: "name"
-                                    valueRole: "packageId"
-                                    Layout.preferredWidth: 260
-                                }
-
-                                Button {
-                                    text: "+ Add Widget"
-                                    highlighted: true
-                                    implicitHeight: 32
-                                    contentItem: Text {
-                                        text: parent.text
+                                    Text {
+                                        text: "✨ Add Widget:"
                                         color: "#ffffff"
-                                        font.pixelSize: 12
                                         font.bold: true
-                                        verticalAlignment: Text.AlignVCenter
-                                        horizontalAlignment: Text.AlignHCenter
+                                        font.pixelSize: 12
                                     }
-                                    background: Rectangle {
-                                        radius: 6
-                                        color: parent.down ? "#005bb5" : (parent.hovered ? "#0071e3" : "#0a84ff")
-                                        border.color: "#0a84ff"
-                                        border.width: 1
-                                    }
-                                    onClicked: {
-                                        if (templateCombo.currentValue) {
-                                            widgetManagerService.addWidget(templateCombo.currentValue)
+
+                                    ComboBox {
+                                        id: templateCombo
+                                        model: widgetManagerService.availableTemplates
+                                        textRole: "name"
+                                        valueRole: "packageId"
+                                        Layout.preferredWidth: 280
+                                        implicitHeight: 34
+
+                                        contentItem: RowLayout {
+                                            spacing: 8
+                                            anchors.leftMargin: 10
+                                            anchors.rightMargin: 10
+
+                                            Text {
+                                                text: {
+                                                    if (templateCombo.currentIndex >= 0 && templateCombo.model && templateCombo.currentIndex < templateCombo.model.length) {
+                                                        return templateCombo.model[templateCombo.currentIndex].icon || "✨"
+                                                    }
+                                                    return "✨"
+                                                }
+                                                font.pixelSize: 13
+                                            }
+
+                                            Text {
+                                                text: templateCombo.currentText
+                                                color: "#ffffff"
+                                                font.pixelSize: 12
+                                                font.bold: true
+                                                elide: Text.ElideRight
+                                                Layout.fillWidth: true
+                                                verticalAlignment: Text.AlignVCenter
+                                            }
+                                        }
+
+                                        background: Rectangle {
+                                            radius: 7
+                                            color: templateCombo.down ? "#1f1f28" : (templateCombo.hovered ? "#2b2b36" : "#23232c")
+                                            border.color: templateCombo.hovered ? "#484858" : "#32323e"
+                                            border.width: 1
+                                        }
+
+                                        delegate: ItemDelegate {
+                                            id: comboItemDelegate
+                                            width: templateCombo.width
+                                            implicitHeight: 34
+                                            highlighted: templateCombo.highlightedIndex === index
+
+                                            contentItem: RowLayout {
+                                                anchors.fill: parent
+                                                anchors.leftMargin: 12
+                                                anchors.rightMargin: 12
+                                                spacing: 8
+
+                                                Text {
+                                                    text: modelData.icon || "✨"
+                                                    font.pixelSize: 13
+                                                }
+
+                                                Text {
+                                                    text: modelData.name
+                                                    color: comboItemDelegate.highlighted ? "#ffffff" : "#d4d4d8"
+                                                    font.pixelSize: 12
+                                                    font.bold: comboItemDelegate.highlighted
+                                                    elide: Text.ElideRight
+                                                    Layout.fillWidth: true
+                                                    verticalAlignment: Text.AlignVCenter
+                                                }
+                                            }
+
+                                            background: Rectangle {
+                                                color: comboItemDelegate.highlighted ? "#0a84ff" : (comboItemDelegate.hovered ? "#2b2b36" : "#1e1e26")
+                                            }
+                                        }
+
+                                        popup: Popup {
+                                            y: templateCombo.height + 4
+                                            width: templateCombo.width
+                                            implicitHeight: Math.min(320, contentItem.implicitHeight + 12)
+                                            padding: 4
+
+                                            contentItem: ListView {
+                                                clip: true
+                                                implicitHeight: contentHeight
+                                                model: templateCombo.popup.visible ? templateCombo.delegateModel : null
+                                                currentIndex: templateCombo.highlightedIndex
+                                                ScrollIndicator.vertical: ScrollIndicator { }
+                                            }
+
+                                            background: Rectangle {
+                                                color: "#181820"
+                                                border.color: "#383846"
+                                                border.width: 1
+                                                radius: 8
+                                            }
                                         }
                                     }
+
+                                    Button {
+                                        text: "+ Add Selected"
+                                        highlighted: true
+                                        implicitHeight: 34
+                                        contentItem: Text {
+                                            text: parent.text
+                                            color: "#ffffff"
+                                            font.pixelSize: 12
+                                            font.bold: true
+                                            verticalAlignment: Text.AlignVCenter
+                                            horizontalAlignment: Text.AlignHCenter
+                                        }
+                                        background: Rectangle {
+                                            radius: 7
+                                            color: parent.down ? "#005bb5" : (parent.hovered ? "#0071e3" : "#0a84ff")
+                                            border.color: "#0a84ff"
+                                            border.width: 1
+                                        }
+                                        onClicked: {
+                                            var targetId = ""
+                                            if (templateCombo.currentIndex >= 0 && templateCombo.model && templateCombo.currentIndex < templateCombo.model.length) {
+                                                var itm = templateCombo.model[templateCombo.currentIndex]
+                                                if (itm && itm.packageId) targetId = itm.packageId
+                                            }
+                                            if (!targetId && templateCombo.currentValue) {
+                                                targetId = templateCombo.currentValue
+                                            }
+                                            if (targetId) {
+                                                widgetManagerService.addWidget(targetId)
+                                            }
+                                        }
+                                    }
+
+                                    Item { Layout.fillWidth: true }
                                 }
 
-                                Item { Layout.fillWidth: true }
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    height: 1
+                                    color: "#252530"
+                                }
+
+                                // Row 2: Instant One-Click Quick Add Gallery
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 8
+
+                                    Text {
+                                        text: "Quick Add:"
+                                        color: "#a1a1aa"
+                                        font.pixelSize: 11
+                                        font.bold: true
+                                    }
+
+                                    Repeater {
+                                        model: [
+                                            { id: "calendar", name: "Calendar", icon: "📅" },
+                                            { id: "weather", name: "Weather", icon: "☀️" },
+                                            { id: "clock-digital", name: "Digital Clock", icon: "🕒" },
+                                            { id: "clock-analog", name: "Analog Clock", icon: "🕒" },
+                                            { id: "music", name: "Music", icon: "🎵" },
+                                            { id: "test-glass", name: "Quote", icon: "✨" },
+                                            { id: "timer", name: "Timer", icon: "⏱️" }
+                                        ]
+
+                                        delegate: Rectangle {
+                                            id: quickChip
+                                            implicitHeight: 26
+                                            implicitWidth: chipRow.implicitWidth + 14
+                                            radius: 13
+                                            color: chipMouse.containsMouse ? "#0a84ff" : "#24242e"
+                                            border.color: chipMouse.containsMouse ? "#0a84ff" : "#363644"
+                                            border.width: 1
+
+                                            RowLayout {
+                                                id: chipRow
+                                                anchors.centerIn: parent
+                                                spacing: 4
+                                                Text { text: "+ " + modelData.icon; font.pixelSize: 10 }
+                                                Text {
+                                                    text: modelData.name
+                                                    color: chipMouse.containsMouse ? "#ffffff" : "#d4d4d8"
+                                                    font.pixelSize: 11
+                                                    font.bold: true
+                                                }
+                                            }
+
+                                            MouseArea {
+                                                id: chipMouse
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: widgetManagerService.addWidget(modelData.id)
+                                            }
+
+                                            Behavior on color { ColorAnimation { duration: 120 } }
+                                        }
+                                    }
+
+                                    Item { Layout.fillWidth: true }
+                                }
                             }
                         }
 
