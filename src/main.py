@@ -202,7 +202,10 @@ class WindowController(QObject):
 
     @Slot()
     def closeWidget(self):
-        self.mgr_service.removeWidget(self.instance_id)
+        target_id = self.instance_id
+        mgr = self.mgr_service
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: mgr.removeWidget(target_id))
 
     @Slot()
     def requestActivate(self):
@@ -381,9 +384,6 @@ class WindowController(QObject):
         menu.addSeparator()
         hide_act = menu.addAction("Remove Widget")
         hide_act.triggered.connect(self.closeWidget)
-
-        global_pos = self.view.mapToGlobal(QPoint(local_x, local_y))
-        menu.exec(global_pos)
 
         global_pos = self.view.mapToGlobal(QPoint(local_x, local_y))
         menu.exec(global_pos)
@@ -665,14 +665,26 @@ class WidgetManagerService(QObject):
     def removeWidget(self, widget_id):
         if not widget_id:
             return
-        if widget_id in self._active_views:
-            view = self._active_views.pop(widget_id)
+        view = self._active_views.pop(widget_id, None)
+        if view:
+            keys_to_del = [k for k, v in self._active_views.items() if v is view]
+            for k in keys_to_del:
+                self._active_views.pop(k, None)
             try:
                 self._widget_hwnds.discard(int(view.winId()))
             except Exception:
                 pass
-            view.close()
-            view.deleteLater()
+            try:
+                from compat.plasmoid_item import Plasmoid
+                Plasmoid._window_map.pop(view, None)
+            except Exception:
+                pass
+            try:
+                view.hide()
+                view.close()
+                view.deleteLater()
+            except Exception:
+                pass
         self._controllers.pop(widget_id, None)
         inst_wb = self._instance_weather_backends.pop(widget_id, None)
         if inst_wb:
@@ -706,14 +718,27 @@ class WidgetManagerService(QObject):
                     self.weather_backend.resume_polling()
                 self.launchWidget(widget_id)
         else:
-            if widget_id in self._active_views:
-                view = self._active_views.pop(widget_id)
+            view = self._active_views.pop(widget_id, None)
+            if view:
+                keys_to_del = [k for k, v in self._active_views.items() if v is view]
+                for k in keys_to_del:
+                    self._active_views.pop(k, None)
                 try:
                     self._widget_hwnds.discard(int(view.winId()))
                 except Exception:
                     pass
-                view.close()
-                view.deleteLater()
+                try:
+                    from compat.plasmoid_item import Plasmoid
+                    Plasmoid._window_map.pop(view, None)
+                except Exception:
+                    pass
+                try:
+                    view.hide()
+                    view.close()
+                    view.deleteLater()
+                except Exception:
+                    pass
+                self._controllers.pop(widget_id, None)
                 inst_wb = self._instance_weather_backends.pop(widget_id, None)
                 if inst_wb:
                     inst_wb.pause_polling()
@@ -894,13 +919,6 @@ class WidgetManagerService(QObject):
         pin_widget_to_desktop(hwnd, pin_to_bottom=self._pin_to_bottom)
 
         self._active_views[instance_id] = view
-
-        # Desktop pinning & HWND tracking
-        hwnd = int(view.winId())
-        self._widget_hwnds.add(hwnd)
-        pin_widget_to_desktop(hwnd, pin_to_bottom=self._pin_to_bottom)
-
-        self._active_views[pkg_name] = view
 
 
 def main():

@@ -1193,7 +1193,12 @@ ApplicationWindow {
                                                     }
                                                     ToolTip.visible: hovered
                                                     ToolTip.text: "Delete widget"
-                                                    onClicked: widgetManagerService.removeWidget(modelData.instanceId)
+                                                    onClicked: {
+                                                        var instId = modelData.instanceId
+                                                        Qt.callLater(function() {
+                                                            widgetManagerService.removeWidget(instId)
+                                                        })
+                                                    }
                                                 }
                                             }
                                         }
