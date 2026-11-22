@@ -28,9 +28,10 @@ class WeatherBackend(QObject):
     _geocodeSuccess = Signal(str, float, float)
     _geocodeError = Signal(str)
 
-    def __init__(self, config_mgr=None, parent=None):
+    def __init__(self, config_mgr=None, instance_id=None, parent=None):
         super().__init__(parent)
         self.config_mgr = config_mgr
+        self.instance_id = instance_id
         self.cache_file = get_weather_cache_file()
 
         # Connect background worker signals
@@ -69,10 +70,15 @@ class WeatherBackend(QObject):
 
         # Load saved coordinates from config if available
         if self.config_mgr:
-            cfg = self.config_mgr.get_widget_config("weather")
-            lat_val = getattr(cfg, "latitude", None)
-            lon_val = getattr(cfg, "longitude", None)
-            loc_val = getattr(cfg, "location", None)
+            if self.instance_id:
+                inst = self.config_mgr.get_instance(self.instance_id)
+                cfg = inst.get("config", {}) if inst else {}
+            else:
+                cfg = self.config_mgr.get_widget_config("weather")
+            
+            lat_val = cfg.get("latitude") if isinstance(cfg, dict) else getattr(cfg, "latitude", None)
+            lon_val = cfg.get("longitude") if isinstance(cfg, dict) else getattr(cfg, "longitude", None)
+            loc_val = cfg.get("location") if isinstance(cfg, dict) else getattr(cfg, "location", None)
             if lat_val is not None and lat_val != 0.0:
                 self._lat = float(lat_val)
             if lon_val is not None and lon_val != 0.0:
@@ -288,28 +294,50 @@ class WeatherBackend(QObject):
         try:
             with open(self.cache_file, "r", encoding="utf-8") as f:
                 cached = json.load(f)
-            cached_lat = cached.get("latitude")
-            cached_lon = cached.get("longitude")
-            # Only use if coordinates match
-            if cached_lat is not None and cached_lon is not None:
-                if abs(cached_lat - self._lat) < 0.01 and abs(cached_lon - self._lon) < 0.01:
-                    raw_data = cached.get("data")
-                    if raw_data:
-                        self._process_api_payload(raw_data)
-                        self._last_fetch_timestamp = cached.get("timestamp", 0)
+            cache_key = f"{round(self._lat, 2)}_{round(self._lon, 2)}"
+            entry = None
+            if isinstance(cached, dict):
+                if cache_key in cached:
+                    entry = cached[cache_key]
+                elif "data" in cached:
+                    cached_lat = cached.get("latitude")
+                    cached_lon = cached.get("longitude")
+                    if cached_lat is not None and cached_lon is not None:
+                        if abs(cached_lat - self._lat) < 0.01 and abs(cached_lon - self._lon) < 0.01:
+                            entry = cached
+            if entry:
+                raw_data = entry.get("data")
+                if raw_data:
+                    self._process_api_payload(raw_data)
+                    self._last_fetch_timestamp = entry.get("timestamp", 0)
         except Exception as e:
             print(f"[WeatherBackend] Error loading cache: {e}")
 
     def _save_cache(self, raw_data):
         try:
-            cache_obj = {
+            cache_dict = {}
+            if os.path.exists(self.cache_file):
+                try:
+                    with open(self.cache_file, "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                        if isinstance(loaded, dict):
+                            if "data" in loaded and "latitude" in loaded:
+                                k = f"{round(loaded['latitude'], 2)}_{round(loaded['longitude'], 2)}"
+                                cache_dict[k] = loaded
+                            else:
+                                cache_dict = loaded
+                except Exception:
+                    cache_dict = {}
+
+            cache_key = f"{round(self._lat, 2)}_{round(self._lon, 2)}"
+            cache_dict[cache_key] = {
                 "latitude": self._lat,
                 "longitude": self._lon,
                 "timestamp": time.time(),
                 "data": raw_data
             }
             with open(self.cache_file, "w", encoding="utf-8") as f:
-                json.dump(cache_obj, f)
+                json.dump(cache_dict, f)
         except Exception as e:
             print(f"[WeatherBackend] Error saving cache: {e}")
 
@@ -344,13 +372,18 @@ class WeatherBackend(QObject):
             self.coordinatesChanged.emit()
             # Persist in config
             if self.config_mgr:
-                self.config_mgr.set_widget_config("weather", "latitude", self._lat)
-                self.config_mgr.set_widget_config("weather", "longitude", self._lon)
-                self.config_mgr.set_widget_config("weather", "location", self._location_name)
-                # Sync weather-panel as well
-                self.config_mgr.set_widget_config("weather-panel", "latitude", self._lat)
-                self.config_mgr.set_widget_config("weather-panel", "longitude", self._lon)
-                self.config_mgr.set_widget_config("weather-panel", "location", self._location_name)
+                if self.instance_id:
+                    self.config_mgr.set_instance_config(self.instance_id, "latitude", self._lat)
+                    self.config_mgr.set_instance_config(self.instance_id, "longitude", self._lon)
+                    self.config_mgr.set_instance_config(self.instance_id, "location", self._location_name)
+                else:
+                    self.config_mgr.set_widget_config("weather", "latitude", self._lat)
+                    self.config_mgr.set_widget_config("weather", "longitude", self._lon)
+                    self.config_mgr.set_widget_config("weather", "location", self._location_name)
+                    # Sync weather-panel as well
+                    self.config_mgr.set_widget_config("weather-panel", "latitude", self._lat)
+                    self.config_mgr.set_widget_config("weather-panel", "longitude", self._lon)
+                    self.config_mgr.set_widget_config("weather-panel", "location", self._location_name)
             self.refreshWeather(force=True)
 
     def _on_fetch_success(self, payload):

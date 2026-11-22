@@ -659,11 +659,12 @@ ApplicationWindow {
                         }
                     }
 
-                    // ── SECTION 3: Installed Widgets Card ───────────────────────
+                    // ── SECTION 3: Installed Widgets & Add New Widget ───────────
                     ColumnLayout {
                         Layout.fillWidth: true
-                        spacing: 8
+                        spacing: 10
 
+                        // Section Header
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 8
@@ -688,7 +689,7 @@ ApplicationWindow {
                                 Text {
                                     id: countText
                                     anchors.centerIn: parent
-                                    text: widgetManagerService.widgetListModel.length + " widgets"
+                                    text: widgetManagerService.widgetListModel.length + " active"
                                     color: "#34C759"
                                     font.pixelSize: 11
                                     font.bold: true
@@ -701,12 +702,71 @@ ApplicationWindow {
                             TextField {
                                 id: filterWidgetInput
                                 placeholderText: "Filter widgets..."
-                                Layout.preferredWidth: 200
+                                Layout.preferredWidth: 180
                                 selectByMouse: true
                             }
                         }
 
-                        // Outer Card for Widget List Items (Requirement 4)
+                        // Add New Widget Card
+                        Rectangle {
+                            Layout.fillWidth: true
+                            radius: 12
+                            color: "#18181d"
+                            border.color: "#282830"
+                            border.width: 1
+                            implicitHeight: addWidgetRow.implicitHeight + 20
+
+                            RowLayout {
+                                id: addWidgetRow
+                                anchors.fill: parent
+                                anchors.margins: 12
+                                spacing: 12
+
+                                Text {
+                                    text: "✨ Add Widget:"
+                                    color: "#ffffff"
+                                    font.bold: true
+                                    font.pixelSize: 12
+                                }
+
+                                ComboBox {
+                                    id: templateCombo
+                                    model: widgetManagerService.availableTemplates
+                                    textRole: "name"
+                                    valueRole: "packageId"
+                                    Layout.preferredWidth: 260
+                                }
+
+                                Button {
+                                    text: "+ Add Widget"
+                                    highlighted: true
+                                    implicitHeight: 32
+                                    contentItem: Text {
+                                        text: parent.text
+                                        color: "#ffffff"
+                                        font.pixelSize: 12
+                                        font.bold: true
+                                        verticalAlignment: Text.AlignVCenter
+                                        horizontalAlignment: Text.AlignHCenter
+                                    }
+                                    background: Rectangle {
+                                        radius: 6
+                                        color: parent.down ? "#005bb5" : (parent.hovered ? "#0071e3" : "#0a84ff")
+                                        border.color: "#0a84ff"
+                                        border.width: 1
+                                    }
+                                    onClicked: {
+                                        if (templateCombo.currentValue) {
+                                            widgetManagerService.addWidget(templateCombo.currentValue)
+                                        }
+                                    }
+                                }
+
+                                Item { Layout.fillWidth: true }
+                            }
+                        }
+
+                        // Outer Card for Widget List Items
                         Rectangle {
                             Layout.fillWidth: true
                             radius: 12
@@ -730,7 +790,8 @@ ApplicationWindow {
                                         required property var modelData
                                         visible: filterWidgetInput.text.trim().length === 0 ||
                                                  modelData.name.toLowerCase().indexOf(filterWidgetInput.text.toLowerCase()) >= 0 ||
-                                                 modelData.packageId.toLowerCase().indexOf(filterWidgetInput.text.toLowerCase()) >= 0
+                                                 modelData.packageId.toLowerCase().indexOf(filterWidgetInput.text.toLowerCase()) >= 0 ||
+                                                 modelData.instanceId.toLowerCase().indexOf(filterWidgetInput.text.toLowerCase()) >= 0
                                         Layout.fillWidth: true
                                         implicitHeight: cardRow.implicitHeight + 18
                                         radius: 10
@@ -738,7 +799,6 @@ ApplicationWindow {
                                         border.color: cardHover.hovered ? (modelData.active ? "#0a84ff" : "#444452") : (modelData.active ? "#0a84ff66" : "#282832")
                                         border.width: modelData.active ? 1.5 : 1
 
-                                        // Subtle hover effect
                                         HoverHandler {
                                             id: cardHover
                                         }
@@ -763,7 +823,7 @@ ApplicationWindow {
 
                                                 ToggleSwitch {
                                                     checked: modelData.active
-                                                    onToggled: (chk) => widgetManagerService.setWidgetActive(modelData.packageId, chk)
+                                                    onToggled: (chk) => widgetManagerService.setWidgetActive(modelData.instanceId, chk)
                                                 }
 
                                                 // Colored Category Squircle Icon
@@ -805,7 +865,7 @@ ApplicationWindow {
                                                         Layout.fillWidth: true
                                                     }
                                                     Text {
-                                                        text: modelData.packageId + " • " + Math.round(modelData.width) + " × " + Math.round(modelData.height) + " px"
+                                                        text: modelData.instanceId + " • " + Math.round(modelData.width) + " × " + Math.round(modelData.height) + " px"
                                                         color: "#71717a"
                                                         font.pixelSize: 11
                                                         elide: Text.ElideRight
@@ -814,7 +874,7 @@ ApplicationWindow {
                                                 }
                                             }
 
-                                            // Right Side Controls: Scale Slider + Presets + Optional TZ / Quote
+                                            // Right Side Controls: Scale Slider + Presets + Optional TZ / Weather / Quote + Trash Button
                                             RowLayout {
                                                 Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
                                                 spacing: 8
@@ -833,7 +893,7 @@ ApplicationWindow {
                                                     stepSize: 0.05
                                                     value: modelData.scale
                                                     Layout.preferredWidth: 70
-                                                    onMoved: widgetManagerService.setWidgetScale(modelData.packageId, value)
+                                                    onMoved: widgetManagerService.setWidgetScale(modelData.instanceId, value)
                                                 }
 
                                                 Button {
@@ -854,7 +914,7 @@ ApplicationWindow {
                                                         border.color: parent.hovered ? "#484856" : "#343440"
                                                         border.width: 1
                                                     }
-                                                    onClicked: widgetManagerService.resizeWidget(modelData.packageId, 300, 300)
+                                                    onClicked: widgetManagerService.resizeWidget(modelData.instanceId, 300, 300)
                                                 }
 
                                                 Button {
@@ -875,7 +935,7 @@ ApplicationWindow {
                                                         border.color: parent.hovered ? "#484856" : "#343440"
                                                         border.width: 1
                                                     }
-                                                    onClicked: widgetManagerService.resizeWidget(modelData.packageId, 640, 300)
+                                                    onClicked: widgetManagerService.resizeWidget(modelData.instanceId, 640, 300)
                                                 }
 
                                                 // Timezone for clock / city
@@ -898,7 +958,31 @@ ApplicationWindow {
                                                         border.color: parent.hovered ? "#484856" : "#343440"
                                                         border.width: 1
                                                     }
-                                                    onClicked: widgetManagerService.promptWidgetTimezone(modelData.packageId)
+                                                    onClicked: widgetManagerService.promptWidgetTimezone(modelData.instanceId)
+                                                }
+
+                                                // Weather City Button
+                                                Button {
+                                                    visible: modelData.packageId.indexOf("weather") >= 0
+                                                    text: "📍 " + (modelData.location ? modelData.location.split(",")[0].slice(0, 7) : "City")
+                                                    implicitHeight: 28
+                                                    Layout.preferredWidth: 70
+                                                    contentItem: Text {
+                                                        text: parent.text
+                                                        color: "#e4e4e7"
+                                                        font.pixelSize: 10
+                                                        font.bold: true
+                                                        verticalAlignment: Text.AlignVCenter
+                                                        horizontalAlignment: Text.AlignHCenter
+                                                        elide: Text.ElideRight
+                                                    }
+                                                    background: Rectangle {
+                                                        radius: 5
+                                                        color: parent.down ? "#1c1c22" : (parent.hovered ? "#2e2e38" : "#24242c")
+                                                        border.color: parent.hovered ? "#484856" : "#343440"
+                                                        border.width: 1
+                                                    }
+                                                    onClicked: widgetManagerService.promptWidgetCity(modelData.instanceId)
                                                 }
 
                                                 // Quote input for test-glass
@@ -913,20 +997,34 @@ ApplicationWindow {
                                                     }
 
                                                     TextField {
-                                                        id: glassTextMgrInput
-                                                        text: widgetManagerService.glassText
-                                                        placeholderText: "Liquid gLASS"
+                                                        id: glassTextInstInput
+                                                        text: modelData.glassText || ""
+                                                        placeholderText: "Quote..."
                                                         Layout.preferredWidth: 120
-                                                        onEditingFinished: widgetManagerService.setGlassText(text)
-                                                        Connections {
-                                                            target: widgetManagerService
-                                                            function onGlassTextChanged(newText) {
-                                                                if (!glassTextMgrInput.activeFocus) {
-                                                                    glassTextMgrInput.text = newText
-                                                                }
-                                                            }
-                                                        }
+                                                        onEditingFinished: widgetManagerService.setInstanceGlassText(modelData.instanceId, text)
                                                     }
+                                                }
+
+                                                // Delete / Trash Button
+                                                Button {
+                                                    text: "🗑️"
+                                                    implicitHeight: 28
+                                                    implicitWidth: 32
+                                                    contentItem: Text {
+                                                        text: parent.text
+                                                        font.pixelSize: 12
+                                                        verticalAlignment: Text.AlignVCenter
+                                                        horizontalAlignment: Text.AlignHCenter
+                                                    }
+                                                    background: Rectangle {
+                                                        radius: 6
+                                                        color: parent.down ? "#7f1d1d" : (parent.hovered ? "#991b1b" : "#24242c")
+                                                        border.color: parent.hovered ? "#ef4444" : "#343440"
+                                                        border.width: 1
+                                                    }
+                                                    ToolTip.visible: hovered
+                                                    ToolTip.text: "Delete widget"
+                                                    onClicked: widgetManagerService.removeWidget(modelData.instanceId)
                                                 }
                                             }
                                         }

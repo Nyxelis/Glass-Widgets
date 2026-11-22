@@ -14,6 +14,7 @@ from backends.config_manager import ConfigManager
 from backends.wallpaper_backend import WallpaperBackend, WallpaperImageProvider
 from backends.media_backend import MediaBackend
 from backends.calendar_backend import CalendarBackend
+from backends.weather_backend import WeatherBackend
 from backends.autostart_backend import is_auto_start_enabled, enable_auto_start, disable_auto_start
 from backends.win32_window import pin_widget_to_desktop, ensure_default_desktop
 try:
@@ -24,13 +25,19 @@ except ImportError:
 class WindowController(QObject):
     windowMoved = Signal()
     timezoneChanged = Signal()
+    glassTextChanged = Signal(str)
 
-    def __init__(self, view, pkg_name, config_mgr, manager_service, parent=None):
+    def __init__(self, view, instance_id, config_mgr, manager_service, weather_backend=None, parent=None):
         super().__init__(parent)
         self.view = view
-        self.pkg_name = pkg_name
+        self.instance_id = instance_id
         self.config_mgr = config_mgr
         self.mgr_service = manager_service
+        self.weather_backend = weather_backend
+
+        inst = self.config_mgr.get_instance(instance_id)
+        self.pkg_name = inst.get("type", "clock-analog") if inst else "clock-analog"
+
         self.view.xChanged.connect(self.windowMoved)
         self.view.yChanged.connect(self.windowMoved)
 
@@ -78,7 +85,7 @@ class WindowController(QObject):
             new_y = self._snap(new_y, snap)
         self.view.setPosition(new_x, new_y)
         self.windowMoved.emit()
-        self.config_mgr.update_layout(self.pkg_name, x=new_x, y=new_y)
+        self.config_mgr.update_instance_layout(self.instance_id, x=new_x, y=new_y)
 
     @Slot()
     def startDrag(self):
@@ -88,7 +95,6 @@ class WindowController(QObject):
 
     @Slot(int)
     def updateDrag(self, snap):
-        from PySide6.QtGui import QCursor
         if not hasattr(self, "_drag_start_cursor"):
             return
         curr = QCursor.pos()
@@ -101,18 +107,16 @@ class WindowController(QObject):
             new_y = self._snap(new_y, snap)
         self.view.setPosition(new_x, new_y)
         self.windowMoved.emit()
-        self.config_mgr.update_layout(self.pkg_name, x=new_x, y=new_y)
+        self.config_mgr.update_instance_layout(self.instance_id, x=new_x, y=new_y)
 
     @Slot(str)
     def startResize(self, edge):
-        from PySide6.QtGui import QCursor
         self._resize_edge = edge
         self._resize_start_cursor = QCursor.pos()
         self._resize_start_geo = (self.view.x(), self.view.y(), self.view.width(), self.view.height())
 
     @Slot(int)
     def updateResize(self, snap):
-        from PySide6.QtGui import QCursor
         if not hasattr(self, "_resize_start_cursor"):
             return
         curr = QCursor.pos()
@@ -142,7 +146,7 @@ class WindowController(QObject):
 
         self.view.setGeometry(new_x, new_y, new_w, new_h)
         self.windowMoved.emit()
-        self.config_mgr.update_layout(self.pkg_name, x=new_x, y=new_y, width=new_w, height=new_h)
+        self.config_mgr.update_instance_layout(self.instance_id, x=new_x, y=new_y, width=new_w, height=new_h)
         self.mgr_service.refreshList()
 
     @Slot(int, int)
@@ -151,7 +155,7 @@ class WindowController(QObject):
         if snap > 0:
             new_w = self._snap(new_w, snap)
         self.view.setWidth(new_w)
-        self.config_mgr.update_layout(self.pkg_name, width=new_w)
+        self.config_mgr.update_instance_layout(self.instance_id, width=new_w)
         self.mgr_service.refreshList()
 
     @Slot(int, int)
@@ -164,7 +168,7 @@ class WindowController(QObject):
         self.view.setPosition(new_x, self.view.y())
         self.view.setWidth(new_w)
         self.windowMoved.emit()
-        self.config_mgr.update_layout(self.pkg_name, x=new_x, width=new_w)
+        self.config_mgr.update_instance_layout(self.instance_id, x=new_x, width=new_w)
         self.mgr_service.refreshList()
 
     @Slot(int, int)
@@ -173,7 +177,7 @@ class WindowController(QObject):
         if snap > 0:
             new_h = self._snap(new_h, snap)
         self.view.setHeight(new_h)
-        self.config_mgr.update_layout(self.pkg_name, height=new_h)
+        self.config_mgr.update_instance_layout(self.instance_id, height=new_h)
         self.mgr_service.refreshList()
 
     @Slot(int, int)
@@ -186,18 +190,19 @@ class WindowController(QObject):
         self.view.setPosition(self.view.x(), new_y)
         self.view.setHeight(new_h)
         self.windowMoved.emit()
-        self.config_mgr.update_layout(self.pkg_name, y=new_y, height=new_h)
+        self.config_mgr.update_instance_layout(self.instance_id, y=new_y, height=new_h)
         self.mgr_service.refreshList()
 
     @Slot(float)
     def changeScale(self, delta):
-        layout = self.config_mgr.get_layout(self.pkg_name)
-        new_scale = max(0.75, min(2.0, round((layout.get("scale", 1.0) + delta) * 100) / 100))
-        self.mgr_service.setWidgetScale(self.pkg_name, new_scale)
+        inst = self.config_mgr.get_instance(self.instance_id)
+        cur_sc = float(inst.get("scale", 1.0)) if inst else 1.0
+        new_scale = max(0.75, min(2.0, round((cur_sc + delta) * 100) / 100))
+        self.mgr_service.setWidgetScale(self.instance_id, new_scale)
 
     @Slot()
     def closeWidget(self):
-        self.mgr_service.setWidgetActive(self.pkg_name, False)
+        self.mgr_service.removeWidget(self.instance_id)
 
     @Slot()
     def requestActivate(self):
@@ -205,9 +210,8 @@ class WindowController(QObject):
 
     @Property(str, notify=timezoneChanged)
     def currentTimezone(self):
-        cfg = self.config_mgr.get_widget_config(self.pkg_name)
-        val = getattr(cfg, "clocks", "") or ""
-        return str(val)
+        val = self.config_mgr.get_instance_config_val(self.instance_id, "clocks", "")
+        return str(val or "")
 
     @Property(bool, notify=timezoneChanged)
     def isClockWidget(self):
@@ -217,24 +221,33 @@ class WindowController(QObject):
     def isWeatherWidget(self):
         return "weather" in self.pkg_name.lower()
 
-    @Property(str, notify=timezoneChanged)
+    @Property(str, notify=glassTextChanged)
     def glassText(self):
-        return self.mgr_service.glassText
+        val = self.config_mgr.get_instance_config_val(self.instance_id, "glassText", None)
+        if val is None:
+            val = self.config_mgr.saved_configs.get("test-glass", {}).get("glassText", "Liquid gLASS")
+        return str(val)
 
     @Slot(str)
     def setGlassText(self, text):
-        self.mgr_service.setGlassText(text)
+        self.config_mgr.set_instance_config(self.instance_id, "glassText", text)
+        self.glassTextChanged.emit(text)
+        self.mgr_service.refreshList()
 
     @Slot(str)
     def setTimezone(self, tz_str):
-        self.config_mgr.set_widget_config(self.pkg_name, "clocks", tz_str)
+        self.config_mgr.set_instance_config(self.instance_id, "clocks", tz_str)
+        cfg = self.config_mgr.get_instance_config(self.instance_id, self.pkg_name)
+        if hasattr(cfg, "clocks"):
+            setattr(cfg, "clocks", tz_str)
         self.timezoneChanged.emit()
+        self.mgr_service.refreshList()
 
     @Slot(int, int)
     def setPresetSize(self, target_w, target_h):
         self.view.resize(target_w, target_h)
         self.windowMoved.emit()
-        self.config_mgr.update_layout(self.pkg_name, width=target_w, height=target_h)
+        self.config_mgr.update_instance_layout(self.instance_id, width=target_w, height=target_h)
         self.mgr_service.refreshList()
 
     @Slot()
@@ -285,8 +298,8 @@ class WindowController(QObject):
             menu.addSeparator()
 
         # Add weather submenu for weather widgets
-        if self.isWeatherWidget and hasattr(self.mgr_service, "weather_backend"):
-            wb = self.mgr_service.weather_backend
+        if self.isWeatherWidget and self.weather_backend:
+            wb = self.weather_backend
             w_menu = menu.addMenu(f"Weather Location ({wb.locationName})")
             presets = [
                 ("New York", 40.7128, -74.0060),
@@ -307,7 +320,15 @@ class WindowController(QObject):
                 act.triggered.connect(make_w_fn(c_name, c_lat, c_lon))
 
             w_menu.addSeparator()
-            mgr_w_act = w_menu.addAction("Custom Lat / Lon in Manager…")
+            custom_act = w_menu.addAction("Custom City…")
+            def on_custom_city():
+                from PySide6.QtWidgets import QInputDialog
+                text, ok = QInputDialog.getText(None, "Weather Location", "Enter City Name (e.g. Paris, Tokyo, Berlin):", text=wb.locationName)
+                if ok and text.strip():
+                    wb.searchCityAndSet(text.strip())
+            custom_act.triggered.connect(on_custom_city)
+
+            mgr_w_act = w_menu.addAction("Configure in Manager…")
             mgr_w_act.triggered.connect(self.mgr_service.showManagerWindow)
 
             ref_act = menu.addAction("🔄 Refresh Weather")
@@ -351,15 +372,18 @@ class WindowController(QObject):
         for sc in [0.75, 1.0, 1.25, 1.5, 2.0]:
             s_act = scale_menu.addAction(f"{int(sc*100)}%")
             def make_sc(target_sc):
-                return lambda: self.mgr_service.setWidgetScale(self.pkg_name, target_sc)
+                return lambda: self.mgr_service.setWidgetScale(self.instance_id, target_sc)
             s_act.triggered.connect(make_sc(sc))
 
         mgr_act = menu.addAction("GlassWidgets Manager…")
         mgr_act.triggered.connect(self.mgr_service.showManagerWindow)
 
         menu.addSeparator()
-        hide_act = menu.addAction("Hide Widget")
+        hide_act = menu.addAction("Remove Widget")
         hide_act.triggered.connect(self.closeWidget)
+
+        global_pos = self.view.mapToGlobal(QPoint(local_x, local_y))
+        menu.exec(global_pos)
 
         global_pos = self.view.mapToGlobal(QPoint(local_x, local_y))
         menu.exec(global_pos)
@@ -391,6 +415,7 @@ class WidgetManagerService(QObject):
         self._active_views = {}
         self._widget_hwnds = set()
         self._controllers = {}
+        self._instance_weather_backends = {}
         self._manager_window = None
 
         # Friendly titles
@@ -400,7 +425,7 @@ class WidgetManagerService(QObject):
             "clock-analog-2": "Glass Clock II",
             "clock-analog-3": "Glass Clock III",
             "clock-digital": "Glass Clock Digital",
-            "clock-glass-text": "Glass Text",
+            "clock-glass-text": "Glass Text Clock",
             "city-1": "Glass City I",
             "city-2": "Glass City II",
             "city-3": "Glass City III",
@@ -409,7 +434,7 @@ class WidgetManagerService(QObject):
             "timer": "Glass Timer",
             "weather": "Glass Weather",
             "weather-panel": "Glass Weather Panel",
-            "test-glass": "Glass Test",
+            "test-glass": "Glass Text",
             "test-timer": "Glass Timer Test"
         }
 
@@ -437,8 +462,8 @@ class WidgetManagerService(QObject):
     def setPinToBottom(self, val):
         self._pin_to_bottom = val
         self.globalPinToBottomChanged.emit()
-        for pkg, view in self._active_views.items():
-            flags = Qt.Window | Qt.FramelessWindowHint | (Qt.WindowStaysOnBottomHint if val else Qt.WindowType(0))
+        for inst_id, view in self._active_views.items():
+            flags = Qt.Tool | Qt.FramelessWindowHint | (Qt.WindowStaysOnBottomHint if val else Qt.WindowType(0))
             view.setFlags(flags)
             hwnd = int(view.winId())
             pin_widget_to_desktop(hwnd, pin_to_bottom=val)
@@ -454,6 +479,14 @@ class WidgetManagerService(QObject):
             self.config_mgr.set_widget_config("test-glass", "glassText", text)
             self.glassTextChanged.emit(text)
 
+    @Slot(str, str)
+    def setInstanceGlassText(self, instance_id, text):
+        self.config_mgr.set_instance_config(instance_id, "glassText", text)
+        ctrl = self._controllers.get(instance_id)
+        if ctrl:
+            ctrl.glassTextChanged.emit(text)
+        self.refreshList()
+
     @Property(bool, notify=autoStartChanged)
     def isAutoStartEnabled(self):
         return is_auto_start_enabled()
@@ -467,17 +500,48 @@ class WidgetManagerService(QObject):
         self.autoStartChanged.emit(self.isAutoStartEnabled)
 
     @Property("QVariantList", notify=widgetListModelChanged)
+    def availableTemplates(self):
+        order = [
+            ("test-glass", "Glass Text (Quote)", "✨"),
+            ("calendar", "Glass Calendar", "📅"),
+            ("weather", "Glass Weather", "☀️"),
+            ("weather-panel", "Glass Weather Panel", "☀️"),
+            ("clock-digital", "Glass Clock Digital", "🕒"),
+            ("clock-analog", "Glass Clock I", "🕒"),
+            ("clock-analog-2", "Glass Clock II", "🕒"),
+            ("clock-analog-3", "Glass Clock III", "🕒"),
+            ("clock-glass-text", "Glass Text Clock", "🕒"),
+            ("city-digital", "Glass City Digital", "🕒"),
+            ("city-1", "Glass City I", "🕒"),
+            ("city-2", "Glass City II", "🕒"),
+            ("city-3", "Glass City III", "🕒"),
+            ("music", "Glass Music", "🎵"),
+            ("timer", "Glass Timer", "⏱️"),
+            ("test-timer", "Glass Timer Test", "⏱️"),
+        ]
+        return [{"packageId": pkg, "name": title, "icon": icon} for pkg, title, icon in order]
+
+    @Property("QVariantList", notify=widgetListModelChanged)
     def widgetListModel(self):
         items = []
-        for pkg, title in sorted(self.widget_titles.items()):
-            layout = self.config_mgr.get_layout(pkg)
+        instances = self.config_mgr.get_instances()
+        for inst_id, inst in instances.items():
+            pkg = inst.get("type", "")
+            title = inst.get("name") or self.widget_titles.get(pkg, pkg)
+            cfg = inst.get("config", {})
+            wb = self._instance_weather_backends.get(inst_id)
+            loc = wb.locationName if wb else cfg.get("location", "New York")
             items.append({
+                "instanceId": inst_id,
                 "packageId": pkg,
                 "name": title,
-                "active": bool(layout.get("visible", False)),
-                "width": float(layout.get("width", 300)),
-                "height": float(layout.get("height", 300)),
-                "scale": float(layout.get("scale", 1.0))
+                "active": bool(inst.get("visible", True)),
+                "width": float(inst.get("width", 300)),
+                "height": float(inst.get("height", 300)),
+                "scale": float(inst.get("scale", 1.0)),
+                "glassText": cfg.get("glassText", self._glass_text),
+                "location": loc,
+                "timezone": str(cfg.get("clocks", "") or "")
             })
         return items
 
@@ -488,7 +552,7 @@ class WidgetManagerService(QObject):
     def toggleGlobalEditMode(self):
         self._global_edit_mode = not self._global_edit_mode
         self.globalEditModeChanged.emit()
-        for pkg, view in self._active_views.items():
+        for inst_id, view in self._active_views.items():
             root = view.rootObject()
             if root:
                 root.setProperty("editMode", self._global_edit_mode)
@@ -508,50 +572,42 @@ class WidgetManagerService(QObject):
         if not scr:
             return
         geo = scr.availableGeometry()
-        for pkg, view in self._active_views.items():
+        for inst_id, view in self._active_views.items():
             vx, vy, vw, vh = view.x(), view.y(), view.width(), view.height()
             nx = max(geo.left() + 20, min(vx, geo.right() - vw - 20))
             ny = max(geo.top() + 20, min(vy, geo.bottom() - vh - 20))
             if nx != vx or ny != vy:
                 view.setPosition(nx, ny)
-                self.config_mgr.update_layout(pkg, x=nx, y=ny)
+                self.config_mgr.update_instance_layout(inst_id, x=nx, y=ny)
 
     @Slot(int)
     def setGlobalStyleMode(self, mode):
         self._global_style_mode = mode
         self.globalStyleModeChanged.emit()
-        # Propagate to all widgets
-        for pkg in self.widget_titles.keys():
-            cfg = self.config_mgr.get_widget_config(pkg)
-            if hasattr(cfg, "styleMode"):
-                # mode 0: Glass Dark (styleMode=0, appearance=0)
-                # mode 1: Glass Light (styleMode=0, appearance=1)
-                # mode 2: Solid Dark (styleMode=1, appearance=0)
-                # mode 3: Solid Light (styleMode=1, appearance=1)
-                sm = 0 if mode in (0, 1) else 1
-                app = 0 if mode in (0, 2) else 1
-                cfg.styleMode = sm
-                cfg.appearance = app
-        self.config_mgr.save_configs()
+        sm = 0 if mode in (0, 1) else 1
+        app = 0 if mode in (0, 2) else 1
+        for inst_id in self.config_mgr.get_instances().keys():
+            self.config_mgr.set_instance_config(inst_id, "styleMode", sm)
+            self.config_mgr.set_instance_config(inst_id, "appearance", app)
+        self.config_mgr.save_layouts()
 
     @Slot(int)
     def setGlobalGridSnap(self, snap):
         self._global_grid_snap = snap
         self.globalGridSnapChanged.emit()
-        for pkg, view in self._active_views.items():
+        for inst_id, view in self._active_views.items():
             root = view.rootObject()
             if root:
                 root.setProperty("gridSnap", snap)
 
     @Slot(str)
-    def promptWidgetTimezone(self, pkg_name):
+    def promptWidgetTimezone(self, instance_id):
         from PySide6.QtWidgets import QInputDialog
-        cfg = self.config_mgr.get_widget_config(pkg_name)
-        cur = str(getattr(cfg, "clocks", "") or "")
+        cur = str(self.config_mgr.get_instance_config_val(instance_id, "clocks", "") or "")
         cur_id = cur.split("|")[0] if cur else ""
         text, ok = QInputDialog.getText(
             None,
-            f"Set Timezone for {pkg_name}",
+            "Set Timezone",
             "Enter IANA Timezone ID (e.g. America/New_York, Asia/Tokyo, Europe/London, Asia/Kolkata):",
             text=cur_id
         )
@@ -559,51 +615,121 @@ class WidgetManagerService(QObject):
             clean_tz = text.strip()
             city = clean_tz.split("/")[-1].replace("_", " ").upper()[:4] if clean_tz else ""
             val = f"{clean_tz}|{city}" if clean_tz else ""
-            self.config_mgr.set_widget_config(pkg_name, "clocks", val)
-            self.refreshList()
+            ctrl = self._controllers.get(instance_id)
+            if ctrl:
+                ctrl.setTimezone(val)
+            else:
+                self.config_mgr.set_instance_config(instance_id, "clocks", val)
+                self.refreshList()
+
+    @Slot(str)
+    def promptWidgetCity(self, instance_id):
+        from PySide6.QtWidgets import QInputDialog
+        wb = self._instance_weather_backends.get(instance_id)
+        cur = wb.locationName if wb else "New York"
+        text, ok = QInputDialog.getText(
+            None,
+            "Set Weather Location",
+            "Enter City Name (e.g. London, Tokyo, Paris, San Francisco, Delhi):",
+            text=cur
+        )
+        if ok and text.strip():
+            if wb:
+                wb.searchCityAndSet(text.strip())
+            else:
+                self.config_mgr.set_instance_config(instance_id, "location", text.strip())
+                self.refreshList()
+
+    @Slot(str)
+    def addWidget(self, widget_type):
+        if not widget_type or widget_type not in self.widget_titles:
+            return
+        scr = QGuiApplication.primaryScreen()
+        geo = scr.availableGeometry() if scr else None
+        count = len(self._active_views)
+        base_x = (geo.width() // 2 - 150) if geo else 300
+        base_y = (geo.height() // 2 - 150) if geo else 300
+        offset = (count % 8) * 32
+        x = base_x + offset
+        y = base_y + offset
+
+        inst_id = self.config_mgr.create_instance(widget_type, x=x, y=y)
+        self.launchWidget(inst_id)
+        self.refreshList()
+        if widget_type == "music":
+            self.media_backend.start_media_listener()
+        if "weather" in widget_type.lower():
+            self.weather_backend.resume_polling()
+
+    @Slot(str)
+    def removeWidget(self, widget_id):
+        if not widget_id:
+            return
+        if widget_id in self._active_views:
+            view = self._active_views.pop(widget_id)
+            try:
+                self._widget_hwnds.discard(int(view.winId()))
+            except Exception:
+                pass
+            view.close()
+            view.deleteLater()
+        self._controllers.pop(widget_id, None)
+        inst_wb = self._instance_weather_backends.pop(widget_id, None)
+        if inst_wb:
+            inst_wb.pause_polling()
+
+        self.config_mgr.delete_instance(widget_id)
+        self.refreshList()
+
+        remaining_types = [inst.get("type", "") for inst in self.config_mgr.get_instances().values()]
+        if not any("weather" in t.lower() for t in remaining_types):
+            self.weather_backend.pause_polling()
+        if "music" not in remaining_types:
+            self.media_backend.stop_media_listener()
 
     @Slot(str, bool)
-    def setWidgetActive(self, pkg_name, active):
-        if not pkg_name or pkg_name == "undefined":
+    def setWidgetActive(self, widget_id, active):
+        if not widget_id or widget_id == "undefined":
             return
-        layout = self.config_mgr.get_layout(pkg_name)
-        layout["visible"] = active
-        self.config_mgr.update_layout(pkg_name, visible=active)
+        inst = self.config_mgr.get_instance(widget_id)
+        if not inst:
+            return
+        self.config_mgr.update_instance_layout(widget_id, visible=active)
         self.refreshList()
 
         if active:
-            if pkg_name not in self._active_views:
-                if pkg_name == "music":
+            if widget_id not in self._active_views:
+                pkg = inst.get("type", "")
+                if pkg == "music":
                     self.media_backend.start_media_listener()
-                if "weather" in pkg_name.lower():
+                if "weather" in pkg.lower():
                     self.weather_backend.resume_polling()
-                self.launchWidget(pkg_name)
+                self.launchWidget(widget_id)
         else:
-            if pkg_name in self._active_views:
-                if pkg_name == "music":
-                    self.media_backend.stop_media_listener()
-                view = self._active_views.pop(pkg_name)
+            if widget_id in self._active_views:
+                view = self._active_views.pop(widget_id)
                 try:
                     self._widget_hwnds.discard(int(view.winId()))
                 except Exception:
                     pass
                 view.close()
                 view.deleteLater()
-                if "weather" in pkg_name.lower():
-                    if not any("weather" in p.lower() for p in self._active_views):
-                        self.weather_backend.pause_polling()
+                inst_wb = self._instance_weather_backends.pop(widget_id, None)
+                if inst_wb:
+                    inst_wb.pause_polling()
 
     @Slot(str, float)
-    def setWidgetScale(self, pkg_name, scale_val):
-        if not pkg_name or pkg_name == "undefined":
+    def setWidgetScale(self, widget_id, scale_val):
+        if not widget_id or widget_id == "undefined":
             return
-        layout = self.config_mgr.get_layout(pkg_name)
-        old_scale = float(layout.get("scale", 1.0))
-        layout["scale"] = scale_val
-        self.config_mgr.update_layout(pkg_name, scale=scale_val)
+        inst = self.config_mgr.get_instance(widget_id)
+        if not inst:
+            return
+        old_scale = float(inst.get("scale", 1.0))
+        self.config_mgr.update_instance_layout(widget_id, scale=scale_val)
         self.refreshList()
-        if pkg_name in self._active_views:
-            view = self._active_views[pkg_name]
+        if widget_id in self._active_views:
+            view = self._active_views[widget_id]
             root = view.rootObject()
             if root:
                 root.setProperty("widgetScale", scale_val)
@@ -612,19 +738,19 @@ class WidgetManagerService(QObject):
                 nw = max(160, int(round(view.width() * ratio)))
                 nh = max(160, int(round(view.height() * ratio)))
                 view.resize(nw, nh)
-                self.config_mgr.update_layout(pkg_name, width=nw, height=nh)
+                self.config_mgr.update_instance_layout(widget_id, width=nw, height=nh)
 
     @Slot(str, int, int)
-    def resizeWidget(self, pkg_name, w, h):
-        if not pkg_name or pkg_name == "undefined":
+    def resizeWidget(self, widget_id, w, h):
+        if not widget_id or widget_id == "undefined":
             return
-        layout = self.config_mgr.get_layout(pkg_name)
-        layout["width"] = w
-        layout["height"] = h
-        self.config_mgr.update_layout(pkg_name, width=w, height=h)
+        inst = self.config_mgr.get_instance(widget_id)
+        if not inst:
+            return
+        self.config_mgr.update_instance_layout(widget_id, width=w, height=h)
         self.refreshList()
-        if pkg_name in self._active_views:
-            view = self._active_views[pkg_name]
+        if widget_id in self._active_views:
+            view = self._active_views[widget_id]
             view.resize(w, h)
 
     @Slot()
@@ -637,9 +763,9 @@ class WidgetManagerService(QObject):
 
         x = start_x
         y = start_y
-        for pkg, view in self._active_views.items():
+        for inst_id, view in self._active_views.items():
             view.setPosition(x, y)
-            self.config_mgr.update_layout(pkg, x=x, y=y)
+            self.config_mgr.update_instance_layout(inst_id, x=x, y=y)
             x += spacing
             if x + 300 > screen_w:
                 x = start_x
@@ -684,13 +810,15 @@ class WidgetManagerService(QObject):
             self._manager_window.raise_()
             self._manager_window.requestActivate()
 
-    def launchWidget(self, pkg_name):
-        layout = self.config_mgr.get_layout(pkg_name)
-        cfg = self.config_mgr.get_widget_config(pkg_name)
+    def launchWidget(self, instance_id):
+        inst = self.config_mgr.get_instance(instance_id)
+        if not inst:
+            return
+        pkg_name = inst.get("type", "clock-analog")
+        cfg = self.config_mgr.get_instance_config(instance_id, pkg_name)
 
         view = QQuickView()
         view.setColor(Qt.transparent)
-        # Use Qt.Tool so each widget view remains completely independent without window grouping
         flags = Qt.Tool | Qt.FramelessWindowHint | (Qt.WindowStaysOnBottomHint if self._pin_to_bottom else Qt.WindowType(0))
         view.setFlags(flags)
         view.setResizeMode(QQuickView.ResizeMode.SizeRootObjectToView)
@@ -701,13 +829,18 @@ class WidgetManagerService(QObject):
         view.engine().addImportPath(get_resource_path("src/ui"))
         view.engine().addImageProvider("wallpaper", WallpaperImageProvider(self.wallpaper_backend))
 
-        ctrl = WindowController(view, pkg_name, self.config_mgr, self)
-        self._controllers[pkg_name] = ctrl
+        inst_weather = None
+        if "weather" in pkg_name.lower():
+            inst_weather = WeatherBackend(self.config_mgr, instance_id=instance_id)
+            self._instance_weather_backends[instance_id] = inst_weather
+
+        ctrl = WindowController(view, instance_id, self.config_mgr, self, weather_backend=inst_weather)
+        self._controllers[instance_id] = ctrl
 
         attached = PlasmoidAttached()
         attached.set_config(cfg)
-        attached.set_w(layout.get("width", 300))
-        attached.set_h(layout.get("height", 300))
+        attached.set_w(inst.get("width", 300))
+        attached.set_h(inst.get("height", 300))
 
         view.widthChanged.connect(lambda: attached.set_w(view.width()))
         view.heightChanged.connect(lambda: attached.set_h(view.height()))
@@ -724,7 +857,7 @@ class WidgetManagerService(QObject):
         ctx.setContextProperty("globalMediaBackend", self.media_backend)
         ctx.setContextProperty("backend", self.media_backend.active_player)
         ctx.setContextProperty("calendarBackendService", self.calendar_backend)
-        ctx.setContextProperty("weatherBackend", self.weather_backend)
+        ctx.setContextProperty("weatherBackend", inst_weather if inst_weather else self.weather_backend)
         ctx.setContextProperty("windowController", ctrl)
 
         host_path = get_resource_path("src/ui/WidgetHost.qml")
@@ -732,11 +865,11 @@ class WidgetManagerService(QObject):
 
         root = view.rootObject()
         if root:
-            root.setProperty("widgetName", self.widget_titles.get(pkg_name, pkg_name))
+            root.setProperty("widgetName", inst.get("name", self.widget_titles.get(pkg_name, pkg_name)))
             root.setProperty("widgetPackage", pkg_name)
             target_qml = get_resource_path(f"upstream_kde_widgets/packages/{pkg_name}/contents/ui/main.qml")
             root.setProperty("widgetQmlSource", QUrl.fromLocalFile(target_qml))
-            root.setProperty("widgetScale", layout.get("scale", 1.0))
+            root.setProperty("widgetScale", inst.get("scale", 1.0))
             root.setProperty("gridSnap", self._global_grid_snap)
             root.setProperty("editMode", self._global_edit_mode)
 
@@ -744,10 +877,10 @@ class WidgetManagerService(QObject):
             if wp:
                 attached.containment.wallpaperGraphicsObject = wp
 
-        w = int(layout.get("width", 300))
-        h = int(layout.get("height", 300))
-        x = int(layout.get("x", 100))
-        y = int(layout.get("y", 100))
+        w = int(inst.get("width", 300))
+        h = int(inst.get("height", 300))
+        x = int(inst.get("x", 100))
+        y = int(inst.get("y", 100))
         scr = QGuiApplication.primaryScreen()
         if scr:
             geo = scr.availableGeometry()
@@ -755,6 +888,12 @@ class WidgetManagerService(QObject):
             y = max(geo.top() + 20, min(y, geo.bottom() - h - 20))
         view.setGeometry(x, y, w, h)
         view.show()
+
+        hwnd = int(view.winId())
+        self._widget_hwnds.add(hwnd)
+        pin_widget_to_desktop(hwnd, pin_to_bottom=self._pin_to_bottom)
+
+        self._active_views[instance_id] = view
 
         # Desktop pinning & HWND tracking
         hwnd = int(view.winId())
@@ -890,28 +1029,18 @@ def main():
     widget_filter = WidgetNativeEventFilter(service)
     app.installNativeEventFilter(widget_filter)
 
-    # Initial default widgets: on first launch, only launch Clock and Calendar
-    default_active = ["clock-analog", "calendar"]
-    has_saved = len(config_mgr.saved_layouts) > 0
-
-    if not has_saved:
-        for i, pkg in enumerate(default_active):
-            config_mgr.get_layout(pkg, default_x=100 + i*360, default_y=120, default_visible=True)
-        # Ensure all other available widgets default to visible: False
-        for pkg in service.widget_titles.keys():
-            if pkg not in default_active:
-                config_mgr.get_layout(pkg, default_visible=False)
-        config_mgr.save_layouts()
-
+    # Launch all saved instances
+    instances = config_mgr.get_instances()
     has_weather = False
     has_music = False
-    for pkg in config_mgr.saved_layouts.keys():
-        if config_mgr.get_layout(pkg).get("visible", False):
+    for inst_id, inst in instances.items():
+        if inst.get("visible", True):
+            pkg = inst.get("type", "")
             if "weather" in pkg.lower():
                 has_weather = True
             if pkg == "music":
                 has_music = True
-            service.launchWidget(pkg)
+            service.launchWidget(inst_id)
 
     if has_weather:
         weather_backend.resume_polling()

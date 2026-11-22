@@ -29,11 +29,11 @@ PlasmoidItem {
     property bool isEditing: false
     property string draftText: ""
     property string currentText: {
-        if (typeof widgetManagerService !== "undefined" && widgetManagerService && widgetManagerService.glassText !== undefined) {
-            return widgetManagerService.glassText;
-        }
         if (typeof windowController !== "undefined" && windowController && windowController.glassText !== undefined) {
             return windowController.glassText;
+        }
+        if (typeof widgetManagerService !== "undefined" && widgetManagerService && widgetManagerService.glassText !== undefined) {
+            return widgetManagerService.glassText;
         }
         if (plasmoid && plasmoid.configuration && plasmoid.configuration.glassText !== undefined) {
             return plasmoid.configuration.glassText;
@@ -43,10 +43,10 @@ PlasmoidItem {
 
     function saveGlassText(val) {
         currentText = val;
-        if (typeof widgetManagerService !== "undefined" && widgetManagerService) {
-            widgetManagerService.setGlassText(val);
-        } else if (typeof windowController !== "undefined" && windowController) {
+        if (typeof windowController !== "undefined" && windowController) {
             windowController.setGlassText(val);
+        } else if (typeof widgetManagerService !== "undefined" && widgetManagerService) {
+            widgetManagerService.setGlassText(val);
         }
         if (plasmoid && plasmoid.configuration) {
             plasmoid.configuration.glassText = val;

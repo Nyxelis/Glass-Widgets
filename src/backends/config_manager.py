@@ -1,5 +1,6 @@
 import os
 import json
+import uuid
 import xml.etree.ElementTree as ET
 from PySide6.QtCore import QObject, Signal, Property
 try:
@@ -22,15 +23,86 @@ class ConfigManager:
         self.saved_configs = self._load_json(self.config_file)
         self.saved_layouts = self._load_json(self.layout_file)
         self._config_instances = {}
-        self._migrate_legacy_names()
+        self._instance_config_objs = {}
+        self._migrate_to_instance_format()
 
-    def _migrate_legacy_names(self):
+    @staticmethod
+    def _friendly_name(pkg_name):
+        titles = {
+            "calendar": "Glass Calendar",
+            "clock-analog": "Glass Clock I",
+            "clock-analog-2": "Glass Clock II",
+            "clock-analog-3": "Glass Clock III",
+            "clock-digital": "Glass Clock Digital",
+            "clock-glass-text": "Glass Text Clock",
+            "city-1": "Glass City I",
+            "city-2": "Glass City II",
+            "city-3": "Glass City III",
+            "city-digital": "Glass City Digital",
+            "music": "Glass Music",
+            "timer": "Glass Timer",
+            "weather": "Glass Weather",
+            "weather-panel": "Glass Weather Panel",
+            "test-glass": "Glass Text",
+            "test-timer": "Glass Timer Test"
+        }
+        return titles.get(pkg_name, pkg_name)
+
+    def _migrate_to_instance_format(self):
         migrated = False
-        if isinstance(self.saved_layouts, dict):
-            for pkg, ldata in self.saved_layouts.items():
-                if isinstance(ldata, dict) and "name" in ldata and "macOS " in ldata["name"]:
-                    ldata["name"] = ldata["name"].replace("macOS ", "Glass ")
+        if not isinstance(self.saved_layouts, dict) or "instances" not in self.saved_layouts:
+            legacy_data = dict(self.saved_layouts) if isinstance(self.saved_layouts, dict) else {}
+            new_layouts = {"version": 2, "instances": {}}
+
+            visible_items = [(pkg, data) for pkg, data in legacy_data.items() if isinstance(data, dict) and data.get("visible", False)]
+            if visible_items:
+                for pkg, ldata in visible_items:
+                    inst_id = f"{pkg}_1"
+                    name = ldata.get("name") or self._friendly_name(pkg)
+                    if "macOS " in name:
+                        name = name.replace("macOS ", "Glass ")
+                    
+                    inst_cfg = dict(self.saved_configs.get(pkg, {}))
+                    new_layouts["instances"][inst_id] = {
+                        "id": inst_id,
+                        "type": pkg,
+                        "name": name,
+                        "x": int(ldata.get("x", 100)),
+                        "y": int(ldata.get("y", 100)),
+                        "width": int(ldata.get("width", 300)),
+                        "height": int(ldata.get("height", 300)),
+                        "scale": float(ldata.get("scale", 1.0)),
+                        "visible": True,
+                        "locked": bool(ldata.get("locked", False)),
+                        "gridSnap": int(ldata.get("gridSnap", 16)),
+                        "config": inst_cfg
+                    }
+            else:
+                new_layouts["instances"]["calendar_1"] = {
+                    "id": "calendar_1",
+                    "type": "calendar",
+                    "name": "Glass Calendar",
+                    "x": 800, "y": 592, "width": 512, "height": 256,
+                    "scale": 0.75, "visible": True, "locked": False, "gridSnap": 16,
+                    "config": {}
+                }
+                new_layouts["instances"]["clock-analog_1"] = {
+                    "id": "clock-analog_1",
+                    "type": "clock-analog",
+                    "name": "Glass Clock I",
+                    "x": 100, "y": 120, "width": 300, "height": 300,
+                    "scale": 1.0, "visible": True, "locked": False, "gridSnap": 16,
+                    "config": {}
+                }
+            self.saved_layouts = new_layouts
+            migrated = True
+
+        if isinstance(self.saved_layouts, dict) and "instances" in self.saved_layouts:
+            for inst_id, inst in self.saved_layouts["instances"].items():
+                if isinstance(inst, dict) and "name" in inst and "macOS " in inst["name"]:
+                    inst["name"] = inst["name"].replace("macOS ", "Glass ")
                     migrated = True
+
         if migrated:
             self.save_layouts()
 
@@ -51,14 +123,97 @@ class ConfigManager:
             print(f"[ConfigManager] Error writing {path}: {e}")
 
     def save_configs(self):
-        # Sync values from instances
-        for pkg, inst in self._config_instances.items():
-            if hasattr(inst, "_values"):
-                self.saved_configs[pkg] = dict(inst._values)
         self._save_json(self.config_file, self.saved_configs)
 
     def save_layouts(self):
         self._save_json(self.layout_file, self.saved_layouts)
+
+    def get_instances(self):
+        if not isinstance(self.saved_layouts, dict):
+            self.saved_layouts = {"version": 2, "instances": {}}
+        if "instances" not in self.saved_layouts:
+            self.saved_layouts["instances"] = {}
+        return self.saved_layouts["instances"]
+
+    def get_instance(self, instance_id):
+        return self.get_instances().get(instance_id)
+
+    def create_instance(self, pkg_name, name=None, x=None, y=None, width=None, height=None, scale=1.0):
+        instances = self.get_instances()
+        count = sum(1 for inst in instances.values() if inst.get("type") == pkg_name) + 1
+        inst_id = f"{pkg_name}_{uuid.uuid4().hex[:6]}"
+
+        if name is None:
+            base_title = self._friendly_name(pkg_name)
+            name = f"{base_title} #{count}"
+
+        defaults_dims = {
+            "weather": (480, 240),
+            "calendar": (512, 256),
+            "music": (448, 240),
+            "clock-digital": (400, 224),
+            "test-glass": (352, 192),
+            "timer": (224, 224),
+            "city-3": (208, 208),
+            "weather-panel": (384, 416),
+            "city-digital": (640, 300),
+        }
+        def_w, def_h = defaults_dims.get(pkg_name, (300, 300))
+        w = width if width is not None else def_w
+        h = height if height is not None else def_h
+        cur_x = x if x is not None else 100
+        cur_y = y if y is not None else 100
+
+        inst_cfg = dict(self.saved_configs.get(pkg_name, {}))
+
+        new_inst = {
+            "id": inst_id,
+            "type": pkg_name,
+            "name": name,
+            "x": int(cur_x),
+            "y": int(cur_y),
+            "width": int(w),
+            "height": int(h),
+            "scale": float(scale),
+            "visible": True,
+            "locked": False,
+            "gridSnap": 16,
+            "config": inst_cfg
+        }
+        instances[inst_id] = new_inst
+        self.save_layouts()
+        return inst_id
+
+    def delete_instance(self, instance_id):
+        instances = self.get_instances()
+        if instance_id in instances:
+            del instances[instance_id]
+            self._instance_config_objs.pop(instance_id, None)
+            self.save_layouts()
+
+    def update_instance_layout(self, instance_id, **kwargs):
+        inst = self.get_instance(instance_id)
+        if inst:
+            for k, v in kwargs.items():
+                inst[k] = v
+            self.save_layouts()
+
+    def set_instance_config(self, instance_id, prop_name, value):
+        inst = self.get_instance(instance_id)
+        if inst:
+            if "config" not in inst:
+                inst["config"] = {}
+            inst["config"][prop_name] = value
+            cfg_obj = self._instance_config_objs.get(instance_id)
+            if cfg_obj and hasattr(cfg_obj, prop_name):
+                setattr(cfg_obj, prop_name, value)
+            self.save_layouts()
+
+    def get_instance_config_val(self, instance_id, prop_name, default=None):
+        inst = self.get_instance(instance_id)
+        if inst and "config" in inst:
+            return inst["config"].get(prop_name, default)
+        return default
 
     def parse_main_xml(self, pkg_name):
         xml_path = os.path.join(self.packages_dir, pkg_name, "contents", "config", "main.xml")
@@ -93,12 +248,11 @@ class ConfigManager:
             print(f"[ConfigManager] Error parsing {xml_path}: {e}")
         return defaults
 
-    def get_widget_config(self, pkg_name):
-        if pkg_name in self._config_instances:
-            return self._config_instances[pkg_name]
+    def get_instance_config(self, instance_id, pkg_name):
+        if instance_id in self._instance_config_objs:
+            return self._instance_config_objs[instance_id]
 
         defaults = self.parse_main_xml(pkg_name)
-        # Ensure common glass defaults exist even if not in main.xml
         common_defaults = {
             "styleMode": 0,
             "appearance": 0,
@@ -119,12 +273,15 @@ class ConfigManager:
             if k not in defaults:
                 defaults[k] = v
 
-        # Apply saved overrides
         if pkg_name in self.saved_configs:
             for k, v in self.saved_configs[pkg_name].items():
                 defaults[k] = v
 
-        # Build dynamic QObject class
+        inst = self.get_instance(instance_id)
+        if inst and "config" in inst:
+            for k, v in inst["config"].items():
+                defaults[k] = v
+
         attrs = {"__module__": __name__}
         for k, val in defaults.items():
             sig_name = f"{k}Changed"
@@ -132,13 +289,16 @@ class ConfigManager:
             attrs[sig_name] = sig
 
             def make_getter(prop_name):
-                return lambda self: self._values.get(prop_name)
+                return lambda s: s._values.get(prop_name)
 
             def make_setter(prop_name, s_name):
-                def setter(self, v):
-                    if self._values.get(prop_name) != v:
-                        self._values[prop_name] = v
-                        getattr(self, s_name).emit()
+                def setter(s, v):
+                    if s._values.get(prop_name) != v:
+                        s._values[prop_name] = v
+                        getattr(s, s_name).emit()
+                        if inst and "config" in inst:
+                            inst["config"][prop_name] = v
+                            self.save_layouts()
                 return setter
 
             ptype = type(val) if val is not None else str
@@ -146,44 +306,34 @@ class ConfigManager:
                 ptype = "QVariant"
             attrs[k] = Property(ptype, make_getter(k), make_setter(k, sig_name), notify=sig)
 
-        def __init__(self, parent=None):
-            QObject.__init__(self, parent)
-            self._values = dict(defaults)
+        def __init__(s, parent=None):
+            QObject.__init__(s, parent)
+            s._values = dict(defaults)
 
         attrs["__init__"] = __init__
-        cls = type(f"{pkg_name.replace('-', '_')}_Config", (QObject,), attrs)
-        inst = cls()
-        self._config_instances[pkg_name] = inst
-        return inst
+        safe_name = f"Inst_{instance_id.replace('-', '_')}_{pkg_name.replace('-', '_')}"
+        cls = type(safe_name, (QObject,), attrs)
+        inst_obj = cls()
+        self._instance_config_objs[instance_id] = inst_obj
+        return inst_obj
+
+    def get_widget_config(self, pkg_name):
+        return self.get_instance_config(f"{pkg_name}_default", pkg_name)
 
     def set_widget_config(self, pkg_name, prop_name, value):
-        cfg = self.get_widget_config(pkg_name)
-        if hasattr(cfg, prop_name):
-            setattr(cfg, prop_name, value)
         if pkg_name not in self.saved_configs:
             self.saved_configs[pkg_name] = {}
         self.saved_configs[pkg_name][prop_name] = value
         self.save_configs()
 
-    def get_layout(self, pkg_name, default_w=300, default_h=300, default_x=100, default_y=100, default_visible=False):
-        if pkg_name in self.saved_layouts:
-            return self.saved_layouts[pkg_name]
-        layout = {
-            "x": default_x,
-            "y": default_y,
-            "width": default_w,
-            "height": default_h,
-            "scale": 1.0,
-            "visible": default_visible,
-            "locked": False,
-            "gridSnap": 16
-        }
-        self.saved_layouts[pkg_name] = layout
-        return layout
+    def get_layout(self, pkg_name, **kwargs):
+        for inst_id, inst in self.get_instances().items():
+            if inst.get("type") == pkg_name:
+                return inst
+        return {}
 
     def update_layout(self, pkg_name, **kwargs):
-        layout = self.get_layout(pkg_name)
-        for k, v in kwargs.items():
-            layout[k] = v
-        self.saved_layouts[pkg_name] = layout
-        self.save_layouts()
+        for inst_id, inst in self.get_instances().items():
+            if inst.get("type") == pkg_name:
+                self.update_instance_layout(inst_id, **kwargs)
+                return
