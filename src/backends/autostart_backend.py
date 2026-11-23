@@ -4,6 +4,18 @@ import winreg
 
 REG_RUN_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 APP_NAME = "GlassWidgets"
+LEGACY_APP_NAMES = ["LiquidGlassDesktopWidgets", "LiquidGlassWidgets", "LiquidGlass"]
+
+def cleanup_legacy_autostart():
+    for name in LEGACY_APP_NAMES:
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_RUN_PATH, 0, winreg.KEY_SET_VALUE) as key:
+                winreg.DeleteValue(key, name)
+                print(f"[AutoStart] Removed legacy auto-start entry: {name}", flush=True)
+        except (FileNotFoundError, OSError):
+            pass
+        except Exception:
+            pass
 
 def get_launch_command(app_dir=None):
     if getattr(sys, "frozen", False):
@@ -23,6 +35,7 @@ def get_launch_command(app_dir=None):
     return f'"{python_bin}" "{main_py}" --minimized'
 
 def is_auto_start_enabled():
+    cleanup_legacy_autostart()
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_RUN_PATH, 0, winreg.KEY_READ) as key:
             val, _ = winreg.QueryValueEx(key, APP_NAME)
