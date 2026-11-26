@@ -14,6 +14,8 @@ Item {
         id: coverImage
         anchors.fill: parent
         source: art.artUrl
+        sourceSize.width: Math.max(1, art.width)
+        sourceSize.height: Math.max(1, art.height)
         fillMode: Image.PreserveAspectCrop
         smooth: true
         mipmap: true

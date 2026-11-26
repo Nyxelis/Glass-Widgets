@@ -4,3 +4,5 @@ winrt-Windows.Storage.Streams
 winrt-runtime
 pywin32
 requests
+websockets>=12.0
+psutil

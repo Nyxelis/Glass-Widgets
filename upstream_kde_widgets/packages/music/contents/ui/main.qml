@@ -18,7 +18,7 @@ PlasmoidItem {
         id: playPauseAction
         text: root.isPlaying ? i18n("Pause") : i18n("Play")
         icon.name: root.isPlaying ? "media-playback-pause" : "media-playback-start"
-        enabled: root._activePlayer !== null && root._activePlayer !== undefined
+        enabled: root._bcConnected || (root._activePlayer !== null && root._activePlayer !== undefined)
         onTriggered: root.togglePlaying()
     }
     PlasmaCore.Action {
@@ -61,6 +61,20 @@ PlasmoidItem {
         if (_rawAlbumArt !== "") {
             root.albumArt = root._rawAlbumArt
         }
+        if (typeof bitChordBridge !== "undefined" && bitChordBridge) {
+            if (bitChordBridge.isConnected) {
+                root._bcStatus = bitChordBridge.status
+                root._bcTitle = bitChordBridge.title
+                root._bcArtist = bitChordBridge.artist
+                root._bcAlbum = bitChordBridge.album
+                root._bcArt = bitChordBridge.albumArt
+                root._bcLengthUs = bitChordBridge.durationMs * 1000.0
+                root.position = bitChordBridge.progressMs * 1000.0
+                root._lastPosTick = Date.now()
+            }
+            if (typeof bitChordBridge.start === "function")
+                bitChordBridge.start()
+        }
         if (typeof backend !== "undefined" && backend && typeof backend.start_media_listener === "function") {
             backend.start_media_listener()
         } else if (typeof globalMediaBackend !== "undefined" && globalMediaBackend && typeof globalMediaBackend.start_media_listener === "function") {
@@ -69,6 +83,8 @@ PlasmoidItem {
     }
 
     Component.onDestruction: {
+        root._bcArt = ""
+        root.albumArt = ""
         if (typeof backend !== "undefined" && backend && typeof backend.stop_media_listener === "function") {
             backend.stop_media_listener()
         } else if (typeof globalMediaBackend !== "undefined" && globalMediaBackend && typeof globalMediaBackend.stop_media_listener === "function") {
@@ -78,11 +94,29 @@ PlasmoidItem {
 
     onVisibleChanged: {
         if (root.visible) {
+            if (typeof bitChordBridge !== "undefined" && bitChordBridge) {
+                if (bitChordBridge.isConnected) {
+                    root._bcStatus = bitChordBridge.status
+                    root._bcTitle = bitChordBridge.title
+                    root._bcArtist = bitChordBridge.artist
+                    root._bcAlbum = bitChordBridge.album
+                    root._bcArt = bitChordBridge.albumArt
+                    root._bcLengthUs = bitChordBridge.durationMs * 1000.0
+                    root.position = bitChordBridge.progressMs * 1000.0
+                    root._lastPosTick = Date.now()
+                }
+                if (typeof bitChordBridge.start === "function")
+                    bitChordBridge.start()
+            }
+            root.albumArt = root._rawAlbumArt !== "" ? root._rawAlbumArt : root._noAlbumUrl
             if (typeof backend !== "undefined" && backend && typeof backend.start_media_listener === "function") {
                 backend.start_media_listener()
             } else if (typeof globalMediaBackend !== "undefined" && globalMediaBackend && typeof globalMediaBackend.start_media_listener === "function") {
                 globalMediaBackend.start_media_listener()
             }
+        } else {
+            _artDebounceTimer.stop()
+            root.albumArt = ""
         }
     }
 
@@ -137,11 +171,20 @@ PlasmoidItem {
         return cp ? _isPlayerAllowed(cp.identity) : true
     }
 
-    readonly property string track:   _activePlayer?.track ?? ""
-    readonly property string artist:  _activePlayer?.artist ?? ""
-    readonly property string album:   _activePlayer?.album ?? ""
+    // ── BitChord WebSocket Bridge State ──────────────────────────────────
+    readonly property bool _bcConnected: (typeof bitChordBridge !== "undefined" && bitChordBridge) ? bitChordBridge.isConnected : false
+    property string _bcStatus: "stopped"
+    property string _bcTitle: ""
+    property string _bcArtist: ""
+    property string _bcAlbum: ""
+    property string _bcArt: ""
+    property real _bcLengthUs: 0
+
+    readonly property string track:   _bcConnected ? _bcTitle  : (_activePlayer?.track ?? "")
+    readonly property string artist:  _bcConnected ? _bcArtist : (_activePlayer?.artist ?? "")
+    readonly property string album:   _bcConnected ? _bcAlbum  : (_activePlayer?.album ?? "")
     readonly property int lyricsOffsetMs: _activePlayer?.lyricsOffsetMs ?? 0
-    readonly property string _rawAlbumArt: _activePlayer?.artUrl ?? ""
+    readonly property string _rawAlbumArt: _bcConnected ? _bcArt : (_activePlayer?.artUrl ?? "")
     readonly property string _noAlbumUrl: Qt.resolvedUrl("icons/no_album.png")
     property string albumArt: _rawAlbumArt !== "" ? _rawAlbumArt : _noAlbumUrl
 
@@ -158,18 +201,75 @@ PlasmoidItem {
         interval: 150
         onTriggered: root.albumArt = root._rawAlbumArt
     }
-    readonly property int playbackStatus: _activePlayer?.playbackStatus ?? 0
+    readonly property int playbackStatus: {
+        if (_bcConnected) {
+            var st = _bcStatus.toLowerCase()
+            if (st === "playing") return Mpris.PlaybackStatus.Playing
+            if (st === "paused") return Mpris.PlaybackStatus.Paused
+            return 0
+        }
+        return _activePlayer?.playbackStatus ?? 0
+    }
     readonly property bool isPlaying: playbackStatus === Mpris.PlaybackStatus.Playing
-    readonly property bool canGoPrevious: _activePlayer?.canGoPrevious ?? false
-    readonly property bool canGoNext:     _activePlayer?.canGoNext ?? false
-    readonly property bool canPlay:  _activePlayer?.canPlay ?? false
-    readonly property bool canPause: _activePlayer?.canPause ?? false
-    property real length: _activePlayer?.length ?? 0
+    readonly property bool canGoPrevious: _bcConnected ? true : (_activePlayer?.canGoPrevious ?? false)
+    readonly property bool canGoNext:     _bcConnected ? true : (_activePlayer?.canGoNext ?? false)
+    readonly property bool canPlay:  _bcConnected ? true : (_activePlayer?.canPlay ?? false)
+    readonly property bool canPause: _bcConnected ? true : (_activePlayer?.canPause ?? false)
+    readonly property bool canSeek:  _bcConnected ? (root.length > 0) : (_activePlayer ? (_activePlayer.canSeek ?? true) : true)
+    property real length: _bcConnected ? _bcLengthUs : (_activePlayer?.length ?? 0)
     Binding {
         target: root
         property: "length"
-        value: root._activePlayer ? (root._activePlayer.length ?? 0) : 0
+        value: root._bcConnected ? root._bcLengthUs : (root._activePlayer ? (root._activePlayer.length ?? 0) : 0)
         restoreMode: Binding.RestoreBindingOrValue
+    }
+
+    Connections {
+        target: (typeof bitChordBridge !== "undefined" && bitChordBridge) ? bitChordBridge : null
+        function onConnectionStatusChanged(statusText) {
+            if (statusText !== "Connected") {
+                root._bcStatus = "stopped"
+                root._bcTitle = ""
+                root._bcArtist = ""
+                root._bcAlbum = ""
+                root._bcArt = ""
+                root._bcLengthUs = 0
+                root.position = root._activePlayer ? (root._activePlayer.position ?? 0) : 0
+                root._lastPosTick = Date.now()
+            }
+        }
+        function onStateChanged(status, title, artist, album) {
+            var trackChanged = (title !== root._bcTitle)
+            root._bcStatus = status || "stopped"
+            root._bcTitle = title || ""
+            root._bcArtist = artist || ""
+            root._bcAlbum = album || ""
+            if (trackChanged) {
+                root.position = 0
+                root._lastPosTick = Date.now()
+            }
+        }
+        function onProgressChanged(progressMs, durationMs) {
+            var posUs = Math.max(0, progressMs * 1000.0)
+            var lenUs = Math.max(0, durationMs * 1000.0)
+            root._bcLengthUs = lenUs
+            if (root.isSeeking) {
+                if (Math.abs(posUs - root.targetSeekPos) < 2000000) {
+                    root.isSeeking = false
+                    seekWatchdogTimer.stop()
+                    root.position = posUs
+                    root._lastPosTick = Date.now()
+                }
+                return
+            }
+            if (!root.isPlaying || Math.abs(posUs - root.position) > 500000) {
+                root.position = posUs
+                root._lastPosTick = Date.now()
+            }
+        }
+        function onAlbumArtChanged(base64String) {
+            root._bcArt = base64String || ""
+        }
     }
 
     property real position: 0
@@ -317,7 +417,7 @@ PlasmoidItem {
             root.isSeeking = false
             if (root.targetSeekPos > 0) {
                 root.position = root.targetSeekPos
-            } else {
+            } else if (!root._bcConnected) {
                 var bPos = Mpris.GlobalActivePlayer ? Mpris.GlobalActivePlayer.position : (root._activePlayer ? root._activePlayer.position : 0)
                 if (bPos > 0) {
                     root.position = bPos
@@ -331,15 +431,18 @@ PlasmoidItem {
     Connections {
         target: Mpris.GlobalActivePlayer
         function onTrackChanged() {
+            if (root._bcConnected) return
             root.position = 0
             root._lastPosTick = Date.now()
         }
         function onPlayerInfoChanged() {
+            if (root._bcConnected) return
             var l = Mpris.GlobalActivePlayer ? Mpris.GlobalActivePlayer.length : 0
             if (l > 7200000000 || l < 0) l = 0
             root.length = l
         }
         function onPositionChanged() {
+            if (root._bcConnected) return
             var bPos = Mpris.GlobalActivePlayer ? Mpris.GlobalActivePlayer.position : 0
             var bLen = (root.length > 0) ? root.length : (Mpris.GlobalActivePlayer ? Mpris.GlobalActivePlayer.length : 0)
             if (bLen > 0 && bPos > bLen) {
@@ -394,10 +497,12 @@ PlasmoidItem {
     Connections {
         target: Mpris.GlobalMediaBackend
         function onTrackChanged() {
+            if (root._bcConnected) return
             root.position = 0
             root._lastPosTick = Date.now()
         }
         function onPlayerInfoChanged() {
+            if (root._bcConnected) return
             var l = Mpris.GlobalActivePlayer ? Mpris.GlobalActivePlayer.length : 0
             if (l > 7200000000 || l < 0) l = 0
             root.length = l
@@ -430,7 +535,7 @@ PlasmoidItem {
 
     Timer {
         id: positionTimer
-        interval: 250
+        interval: 100
         running: root.isPlaying && !lyricsPositionTimer.running
         repeat: true
         onTriggered: {
@@ -477,8 +582,8 @@ PlasmoidItem {
         }
     }
     onIsPlayingChanged: {
-        root.position = root._activePlayer?.position ?? 0
-        root._lastPosTick = 0
+        root.position = root._bcConnected ? (bitChordBridge.progressMs * 1000.0) : (root._activePlayer?.position ?? 0)
+        root._lastPosTick = root.isPlaying ? Date.now() : 0
     }
     onLengthChanged: {
         if (length > 0 && _lyricsState === 0 && track !== "")
@@ -508,27 +613,46 @@ PlasmoidItem {
     }
 
     function togglePlaying() {
+        if (root._bcConnected) {
+            bitChordBridge.togglePlay()
+            return
+        }
         if (!root._activePlayer) return
         root._activePlayer.PlayPause()
     }
     function next() {
+        if (root._bcConnected) {
+            root._flipDirection = -1
+            bitChordBridge.nextTrack()
+            return
+        }
         if (!root._activePlayer) return
         root._flipDirection = -1
         root._activePlayer.Next()
     }
     function previous() {
+        if (root._bcConnected) {
+            root._flipDirection = 1
+            bitChordBridge.previousTrack()
+            return
+        }
         if (!root._activePlayer) return
         root._flipDirection = 1
         root._activePlayer.Previous()
     }
     function seek(positionUs) {
-        if (!root._activePlayer) return
+        if (!root._bcConnected && !root._activePlayer) return
         root.isSeeking = true
         root.targetSeekPos = positionUs
         seekWatchdogTimer.restart()
         if (positionUs >= 0) {
             root.position = positionUs
             root._lastPosTick = Date.now()
+        }
+
+        if (root._bcConnected) {
+            bitChordBridge.seek(Math.round(Math.max(0, positionUs) / 1000.0))
+            return
         }
 
         var posSec = positionUs / 1000000.0
@@ -796,7 +920,7 @@ PlasmoidItem {
                 canPause: root.canPause
                 position: (root.length > 0 && root.position > root.length) ? root.length : (root.isSeeking ? root.targetSeekPos : root.position)
                 length: root.length
-                canSeek: root._activePlayer ? (root._activePlayer.canSeek ?? true) : true
+                canSeek: root.canSeek
                 onTogglePlaying: root.togglePlaying()
                 onNextTrack: root.next()
                 onPreviousTrack: root.previous()
@@ -837,7 +961,7 @@ PlasmoidItem {
                 canPause: root.canPause
                 position: (root.length > 0 && root.position > root.length) ? root.length : (root.isSeeking ? root.targetSeekPos : root.position)
                 length: root.length
-                canSeek: root._activePlayer ? (root._activePlayer.canSeek ?? true) : true
+                canSeek: root.canSeek
                 onTogglePlaying: root.togglePlaying()
                 onNextTrack: root.next()
                 onPreviousTrack: root.previous()
@@ -879,7 +1003,7 @@ PlasmoidItem {
                 canPause: root.canPause
                 position: (root.length > 0 && root.position > root.length) ? root.length : (root.isSeeking ? root.targetSeekPos : root.position)
                 length: root.length
-                canSeek: root._activePlayer ? (root._activePlayer.canSeek ?? true) : true
+                canSeek: root.canSeek
                 onTogglePlaying: root.togglePlaying()
                 onNextTrack: root.next()
                 onPreviousTrack: root.previous()
@@ -909,7 +1033,7 @@ PlasmoidItem {
                 canPause: root.canPause
                 position: (root.length > 0 && root.position > root.length) ? root.length : (root.isSeeking ? root.targetSeekPos : root.position)
                 length: root.length
-                canSeek: root._activePlayer ? (root._activePlayer.canSeek ?? true) : true
+                canSeek: root.canSeek
                 onTogglePlaying: root.togglePlaying()
                 onNextTrack: root.next()
                 onPreviousTrack: root.previous()

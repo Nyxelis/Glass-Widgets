@@ -343,8 +343,8 @@ Item {
         id: wallpaperTex
         anchors.fill: parent
         opacity: 0
-        sourceItem: glass.solidMode ? null : glass.wallpaperItem
-        live: !glass.solidMode
+        sourceItem: (!glass.visible || glass.solidMode) ? null : glass.wallpaperItem
+        live: glass.visible && !glass.solidMode
               && (glass.realtimeRefraction || glass._wallpaperTransition)
         hideSource: true
         recursive: false
@@ -382,7 +382,7 @@ Item {
     // inert and the glass shader samples wallpaperTex directly with
     // the standard uvOffset/uvScale.
 
-    readonly property bool _blurActive: !glass.solidMode && glass.blurRadius > 0 && glass.active
+    readonly property bool _blurActive: glass.visible && !glass.solidMode && glass.blurRadius > 0 && glass.active
 
     // Dual Kawase: number of downsample iterations (each doubles blur reach).
     // radius ~2→1, ~4→2, ~8→3, ~16→4, ~32→5, ~64→6, ~100→6.
@@ -417,8 +417,10 @@ Item {
                       glass.height / glass.wallpaperItem.height)
         : Qt.vector2d(1, 1)
 
-    readonly property real _widgetW: Math.max(1, glass.width)
-    readonly property real _widgetH: Math.max(1, glass.height)
+    readonly property real _maxTexW: glass.wallpaperItem ? Math.max(1, glass.wallpaperItem.width) : 3840
+    readonly property real _maxTexH: glass.wallpaperItem ? Math.max(1, glass.wallpaperItem.height) : 2160
+    readonly property real _widgetW: Math.min(_maxTexW, Math.max(1, glass.width))
+    readonly property real _widgetH: Math.min(_maxTexH, Math.max(1, glass.height))
 
     ShaderEffect {
         id: cropPass

@@ -40,6 +40,9 @@ class WallpaperImageProvider(QQuickImageProvider):
         img = self.backend.get_wallpaper_image()
         if img is None or img.isNull():
             img = self.backend.create_fallback_acrylic_image()
+        elif reqSize.isValid() and reqSize.width() > 0 and reqSize.height() > 0:
+            if img.width() > reqSize.width() or img.height() > reqSize.height():
+                img = img.scaled(reqSize, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
         return img
 
 
@@ -66,17 +69,33 @@ class WallpaperBackend(QObject):
         except Exception:
             return "#0a84ff"
 
+    def _scale_to_screen(self, img: QImage) -> QImage:
+        if img is None or img.isNull():
+            return img
+        sw = max(1, self.screenWidth)
+        sh = max(1, self.screenHeight)
+        if img.width() > sw or img.height() > sh:
+            scaled = img.scaled(sw, sh, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+            if scaled.width() > sw or scaled.height() > sh:
+                cx = max(0, (scaled.width() - sw) // 2)
+                cy = max(0, (scaled.height() - sh) // 2)
+                return scaled.copy(cx, cy, min(sw, scaled.width()), min(sh, scaled.height()))
+            return scaled
+        return img
+
     def create_fallback_acrylic_image(self) -> QImage:
         accent_hex = self.get_accent_color()
         base_col = QColor(accent_hex)
-        img = QImage(1920, 1080, QImage.Format_ARGB32_Premultiplied)
+        sw = max(1, self.screenWidth)
+        sh = max(1, self.screenHeight)
+        img = QImage(sw, sh, QImage.Format_ARGB32_Premultiplied)
         top_col = QColor(int(base_col.red() * 0.35), int(base_col.green() * 0.35), int(base_col.blue() * 0.35))
         bottom_col = QColor(int(base_col.red() * 0.12), int(base_col.green() * 0.12), int(base_col.blue() * 0.12))
         painter = QPainter(img)
-        grad = QLinearGradient(0, 0, 1920, 1080)
+        grad = QLinearGradient(0, 0, sw, sh)
         grad.setColorAt(0.0, top_col)
         grad.setColorAt(1.0, bottom_col)
-        painter.fillRect(0, 0, 1920, 1080, grad)
+        painter.fillRect(0, 0, sw, sh, grad)
         painter.end()
         return img
 
@@ -131,7 +150,8 @@ class WallpaperBackend(QObject):
             img = self.create_fallback_acrylic_image()
 
         if img is not None and not img.isNull():
-            self._cached_image = img
+            self._cached_image = None
+            self._cached_image = self._scale_to_screen(img)
             self._last_wallpaper_path = path
             self._last_mtime = mtime
             self._revision += 1

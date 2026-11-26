@@ -117,13 +117,8 @@ Item {
                 slider.dragPosition = targetUs
                 slider.seek(targetUs)
                 var targetSec = targetUs / 1000000.0
-                console.log("[QML] Seek bar released, sending:", targetSec)
                 slider.seekRequested(targetSec)
                 slider.released()
-                var b = (typeof backend !== "undefined" && backend) ? backend : null
-                if (b && typeof b.seekRequested === "function") {
-                    b.seekRequested(targetSec)
-                }
             }
 
             function _updateDrag(mx) {

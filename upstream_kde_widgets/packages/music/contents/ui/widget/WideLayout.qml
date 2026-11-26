@@ -7,13 +7,6 @@ Item {
 
     readonly property var backend: Mpris.GlobalActivePlayer
 
-    Binding {
-        target: layout
-        property: "length"
-        value: layout.backend ? (layout.backend.length ?? 0) : 0
-        restoreMode: Binding.RestoreBindingOrValue
-    }
-
     required property QtObject colors
     property string fontFamily: ""
     property string fontFamilyThin: ""
@@ -86,13 +79,6 @@ Item {
                 fontSize: Math.max(9, Math.round(layout._s * 0.046))
                 formatTime: layout.formatTime
                 onSeek: function(pos) { layout.seek(pos) }
-                onSeekRequested: function(sec) {
-                    if (typeof backend !== "undefined" && backend && typeof backend.seekRequested === "function") {
-                        backend.seekRequested(sec)
-                    } else {
-                        layout.seek(sec * 1000000.0)
-                    }
-                }
             }
 
             Item {

@@ -6,15 +6,6 @@ import org.kde.plasma.private.mpris as Mpris
 Item {
     id: layout
 
-    readonly property var backend: Mpris.GlobalActivePlayer
-
-    Binding {
-        target: layout
-        property: "length"
-        value: layout.backend ? (layout.backend.length ?? 0) : 0
-        restoreMode: Binding.RestoreBindingOrValue
-    }
-
     required property QtObject colors
     property real cornerRadius: 24
     property real roundness: 7.5
@@ -64,6 +55,9 @@ Item {
             Image {
                 anchors.fill: parent
                 source: layout.albumArt
+                sourceSize.width: Math.max(1, width)
+                sourceSize.height: Math.max(1, height)
+                cache: false
                 fillMode: Image.PreserveAspectCrop
                 smooth: true
                 mipmap: true

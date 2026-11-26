@@ -3,19 +3,25 @@ setlocal
 cd /d "%~dp0"
 
 echo [GlassWidgets for Windows 11]
-echo Checking Python environment...
+echo Checking Python 3.14 environment...
 
-where python >nul 2>nul
-if %ERRORLEVEL% neq 0 (
-    echo [ERROR] Python not found in PATH. Please install Python 3.10+ and add to PATH.
-    pause
-    exit /b 1
+py -3.14 --version >nul 2>nul
+if %ERRORLEVEL% equ 0 (
+    set "PY_CMD=py -3.14"
+) else (
+    where python >nul 2>nul
+    if %ERRORLEVEL% neq 0 (
+        echo [ERROR] Python 3.14 not found.
+        pause
+        exit /b 1
+    )
+    set "PY_CMD=python"
 )
 
-python -c "import PySide6, winrt.windows.media.control, win32gui" >nul 2>nul
+%PY_CMD% -c "import PySide6, winrt.windows.media.control, win32gui, websockets" >nul 2>nul
 if %ERRORLEVEL% neq 0 (
     echo [INFO] Installing required dependencies...
-    python -m pip install -r requirements.txt
+    %PY_CMD% -m pip install -r requirements.txt
     if %ERRORLEVEL% neq 0 (
         echo [ERROR] Failed to install dependencies.
         pause
@@ -24,4 +30,4 @@ if %ERRORLEVEL% neq 0 (
 )
 
 echo [INFO] Launching GlassWidgets...
-python src\main.py %*
+%PY_CMD% src\main.py %*

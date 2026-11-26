@@ -19,6 +19,8 @@ Flipable {
     property string _faceBCanonical: ""
 
     function _stamp(url) {
+        if (!url || url.indexOf("data:") === 0)
+            return url
         _stampCounter++
         if (url.indexOf("?") >= 0)
             return url + "&_t=" + _stampCounter
@@ -53,7 +55,25 @@ Flipable {
         angle: flip._angle
     }
 
-    onArtUrlChanged: _processChange(artUrl, direction)
+    onArtUrlChanged: {
+        if (artUrl === "") {
+            preloader.source = ""
+            faceA.artUrl = ""
+            faceB.artUrl = ""
+            _faceACanonical = ""
+            _faceBCanonical = ""
+            _pending = ""
+            _state = 0
+            return
+        }
+        _processChange(artUrl, direction)
+    }
+
+    Component.onDestruction: {
+        preloader.source = ""
+        faceA.artUrl = ""
+        faceB.artUrl = ""
+    }
 
     function _processChange(url, dir) {
         var frontCanon = _showingA ? _faceACanonical : _faceBCanonical

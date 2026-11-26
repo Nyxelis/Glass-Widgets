@@ -1,11 +1,13 @@
 import sys
 import os
+import gc
 import glob
-from PySide6.QtCore import Qt, QUrl, QObject, Signal, Property, Slot, QPoint
+from datetime import datetime
+from PySide6.QtCore import Qt, QUrl, QObject, Signal, Property, Slot, QPoint, QTimer
 from PySide6.QtGui import QGuiApplication, QIcon, QAction, QCursor
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
-from PySide6.QtQuick import QQuickView, QQuickWindow, QSGRendererInterface
-from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
+from PySide6.QtQml import QQmlApplicationEngine, QQmlEngine, QQmlComponent, QQmlContext
 
 # Adjust path so src/ is root
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
@@ -13,6 +15,7 @@ from compat.plasmoid_item import register_plasmoid_types, PlasmoidAttached
 from backends.config_manager import ConfigManager
 from backends.wallpaper_backend import WallpaperBackend, WallpaperImageProvider
 from backends.media_backend import MediaBackend
+from backends.bitchord_bridge import BitChordBridge
 from backends.calendar_backend import CalendarBackend
 from backends.weather_backend import WeatherBackend
 from backends.autostart_backend import is_auto_start_enabled, enable_auto_start, disable_auto_start
@@ -21,6 +24,40 @@ try:
     from paths import get_resource_path, get_writable_appdata_dir
 except ImportError:
     from src.paths import get_resource_path, get_writable_appdata_dir
+
+class WidgetWindow(QQuickWindow):
+    """Lightweight QQuickWindow host sharing one QQmlEngine across all widgets."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._root_item = None
+        self._qml_ctx = None
+        self._attached = None
+        self.setPersistentSceneGraph(False)
+        self.setPersistentGraphics(False)
+        self.widthChanged.connect(self._sync_root_size)
+        self.heightChanged.connect(self._sync_root_size)
+
+    def set_content(self, root_item, qml_ctx, attached):
+        self._root_item = root_item
+        self._qml_ctx = qml_ctx
+        self._attached = attached
+        if self._root_item is not None:
+            self._root_item.setParentItem(self.contentItem())
+            self._sync_root_size()
+
+    def _sync_root_size(self):
+        if self._root_item is not None:
+            w = self.width()
+            h = self.height()
+            if w > 0:
+                self._root_item.setWidth(w)
+            if h > 0:
+                self._root_item.setHeight(h)
+
+    def rootObject(self):
+        return self._root_item
+
 
 class WindowController(QObject):
     windowMoved = Signal()
@@ -398,11 +435,12 @@ class WidgetManagerService(QObject):
     glassTextChanged = Signal(str)
     autoStartChanged = Signal(bool)
 
-    def __init__(self, config_mgr, wallpaper_backend, media_backend, calendar_backend, weather_backend, app_dir):
+    def __init__(self, config_mgr, wallpaper_backend, media_backend, calendar_backend, weather_backend, app_dir, bitchord_bridge=None):
         super().__init__()
         self.config_mgr = config_mgr
         self.wallpaper_backend = wallpaper_backend
         self.media_backend = media_backend
+        self.bitchord_bridge = bitchord_bridge
         self.calendar_backend = calendar_backend
         self.weather_backend = weather_backend
         self.app_dir = app_dir
@@ -417,6 +455,8 @@ class WidgetManagerService(QObject):
         self._controllers = {}
         self._instance_weather_backends = {}
         self._manager_window = None
+        self._shared_engine = None
+        self._host_component = None
 
         # Friendly titles
         self.widget_titles = {
@@ -640,6 +680,77 @@ class WidgetManagerService(QObject):
                 self.config_mgr.set_instance_config(instance_id, "location", text.strip())
                 self.refreshList()
 
+    def _ensure_bitchord_bridge(self):
+        if self.bitchord_bridge is None:
+            self.bitchord_bridge = BitChordBridge()
+        return self.bitchord_bridge
+
+    def _teardown_bitchord_if_unused(self):
+        has_active_music = any(
+            (self.config_mgr.get_instance(iid) or {}).get("type") == "music"
+            for iid in self._active_views.keys()
+        )
+        if not has_active_music and self.bitchord_bridge is not None:
+            self.bitchord_bridge.stop()
+            self.bitchord_bridge.deleteLater()
+            self.bitchord_bridge = None
+            gc.collect()
+
+    def _destroy_widget_view(self, widget_id):
+        view = self._active_views.pop(widget_id, None)
+        if view:
+            keys_to_del = [k for k, v in self._active_views.items() if v is view]
+            for k in keys_to_del:
+                self._active_views.pop(k, None)
+            try:
+                self._widget_hwnds.discard(int(view.winId()))
+            except Exception:
+                pass
+            try:
+                from compat.plasmoid_item import Plasmoid
+                att = Plasmoid._window_map.pop(view, None)
+                if att is Plasmoid._current_attached:
+                    Plasmoid._current_attached = None
+            except Exception:
+                pass
+            try:
+                root = view.rootObject() if hasattr(view, "rootObject") else None
+                if root:
+                    wp = root.findChild(QObject, "wallpaperItem")
+                    if wp:
+                        wp.setProperty("source", "")
+                    root.setProperty("widgetQmlSource", QUrl())
+                    root.setParentItem(None)
+                    root.deleteLater()
+                if getattr(view, "_qml_ctx", None) is not None:
+                    view._qml_ctx.deleteLater()
+                    view._qml_ctx = None
+                if getattr(view, "_attached", None) is not None:
+                    view._attached.deleteLater()
+                    view._attached = None
+                view._root_item = None
+                view.hide()
+                view.close()
+                view.deleteLater()
+            except Exception:
+                pass
+        ctrl = self._controllers.pop(widget_id, None)
+        if ctrl:
+            try:
+                ctrl.deleteLater()
+            except Exception:
+                pass
+        inst_wb = self._instance_weather_backends.pop(widget_id, None)
+        if inst_wb:
+            inst_wb.pause_polling()
+            try:
+                inst_wb.deleteLater()
+            except Exception:
+                pass
+        if self._shared_engine is not None:
+            self._shared_engine.collectGarbage()
+        gc.collect()
+
     @Slot(str)
     def addWidget(self, widget_type):
         if not widget_type or widget_type not in self.widget_titles:
@@ -658,6 +769,7 @@ class WidgetManagerService(QObject):
         self.refreshList()
         if widget_type == "music":
             self.media_backend.start_media_listener()
+            self._ensure_bitchord_bridge().start()
         if "weather" in widget_type.lower():
             self.weather_backend.resume_polling()
 
@@ -665,30 +777,7 @@ class WidgetManagerService(QObject):
     def removeWidget(self, widget_id):
         if not widget_id:
             return
-        view = self._active_views.pop(widget_id, None)
-        if view:
-            keys_to_del = [k for k, v in self._active_views.items() if v is view]
-            for k in keys_to_del:
-                self._active_views.pop(k, None)
-            try:
-                self._widget_hwnds.discard(int(view.winId()))
-            except Exception:
-                pass
-            try:
-                from compat.plasmoid_item import Plasmoid
-                Plasmoid._window_map.pop(view, None)
-            except Exception:
-                pass
-            try:
-                view.hide()
-                view.close()
-                view.deleteLater()
-            except Exception:
-                pass
-        self._controllers.pop(widget_id, None)
-        inst_wb = self._instance_weather_backends.pop(widget_id, None)
-        if inst_wb:
-            inst_wb.pause_polling()
+        self._destroy_widget_view(widget_id)
 
         self.config_mgr.delete_instance(widget_id)
         self.refreshList()
@@ -698,6 +787,7 @@ class WidgetManagerService(QObject):
             self.weather_backend.pause_polling()
         if "music" not in remaining_types:
             self.media_backend.stop_media_listener()
+        self._teardown_bitchord_if_unused()
 
     @Slot(str, bool)
     def setWidgetActive(self, widget_id, active):
@@ -714,34 +804,13 @@ class WidgetManagerService(QObject):
                 pkg = inst.get("type", "")
                 if pkg == "music":
                     self.media_backend.start_media_listener()
+                    self._ensure_bitchord_bridge().start()
                 if "weather" in pkg.lower():
                     self.weather_backend.resume_polling()
                 self.launchWidget(widget_id)
         else:
-            view = self._active_views.pop(widget_id, None)
-            if view:
-                keys_to_del = [k for k, v in self._active_views.items() if v is view]
-                for k in keys_to_del:
-                    self._active_views.pop(k, None)
-                try:
-                    self._widget_hwnds.discard(int(view.winId()))
-                except Exception:
-                    pass
-                try:
-                    from compat.plasmoid_item import Plasmoid
-                    Plasmoid._window_map.pop(view, None)
-                except Exception:
-                    pass
-                try:
-                    view.hide()
-                    view.close()
-                    view.deleteLater()
-                except Exception:
-                    pass
-                self._controllers.pop(widget_id, None)
-                inst_wb = self._instance_weather_backends.pop(widget_id, None)
-                if inst_wb:
-                    inst_wb.pause_polling()
+            self._destroy_widget_view(widget_id)
+            self._teardown_bitchord_if_unused()
 
     @Slot(str, float)
     def setWidgetScale(self, widget_id, scale_val):
@@ -835,6 +904,17 @@ class WidgetManagerService(QObject):
             self._manager_window.raise_()
             self._manager_window.requestActivate()
 
+    def _ensure_shared_engine(self):
+        if self._shared_engine is None:
+            eng = QQmlEngine(self)
+            eng.addImportPath(get_resource_path("src/compat"))
+            eng.addImportPath(get_resource_path("src/ui"))
+            eng.addImageProvider("wallpaper", WallpaperImageProvider(self.wallpaper_backend))
+            self._shared_engine = eng
+            host_path = get_resource_path("src/ui/WidgetHost.qml")
+            self._host_component = QQmlComponent(eng, QUrl.fromLocalFile(host_path), self)
+        return self._shared_engine
+
     def launchWidget(self, instance_id):
         inst = self.config_mgr.get_instance(instance_id)
         if not inst:
@@ -842,17 +922,13 @@ class WidgetManagerService(QObject):
         pkg_name = inst.get("type", "clock-analog")
         cfg = self.config_mgr.get_instance_config(instance_id, pkg_name)
 
-        view = QQuickView()
+        eng = self._ensure_shared_engine()
+        view = WidgetWindow()
         view.setColor(Qt.transparent)
         flags = Qt.Tool | Qt.FramelessWindowHint | (Qt.WindowStaysOnBottomHint if self._pin_to_bottom else Qt.WindowType(0))
         view.setFlags(flags)
-        view.setResizeMode(QQuickView.ResizeMode.SizeRootObjectToView)
         view.setMinimumWidth(160)
         view.setMinimumHeight(160)
-
-        view.engine().addImportPath(get_resource_path("src/compat"))
-        view.engine().addImportPath(get_resource_path("src/ui"))
-        view.engine().addImageProvider("wallpaper", WallpaperImageProvider(self.wallpaper_backend))
 
         inst_weather = None
         if "weather" in pkg_name.lower():
@@ -874,21 +950,28 @@ class WidgetManagerService(QObject):
         Plasmoid._window_map[view] = attached
         Plasmoid._current_attached = attached
 
-        ctx = view.rootContext()
+        ctx = QQmlContext(eng.rootContext(), view)
         ctx.setContextProperty("widgetManagerService", self)
         ctx.setContextProperty("Plasmoid", attached)
         ctx.setContextProperty("plasmoid", attached)
         ctx.setContextProperty("wallpaperBackend", self.wallpaper_backend)
         ctx.setContextProperty("globalMediaBackend", self.media_backend)
         ctx.setContextProperty("backend", self.media_backend.active_player)
+        if pkg_name == "music":
+            ctx.setContextProperty("bitChordBridge", self._ensure_bitchord_bridge())
+        else:
+            ctx.setContextProperty("bitChordBridge", self.bitchord_bridge)
         ctx.setContextProperty("calendarBackendService", self.calendar_backend)
         ctx.setContextProperty("weatherBackend", inst_weather if inst_weather else self.weather_backend)
         ctx.setContextProperty("windowController", ctrl)
 
-        host_path = get_resource_path("src/ui/WidgetHost.qml")
-        view.setSource(QUrl.fromLocalFile(host_path))
-
-        root = view.rootObject()
+        root = self._host_component.create(ctx)
+        if root is None:
+            print(f"[Widget] Failed to instantiate WidgetHost.qml: {self._host_component.errorString()}", flush=True)
+            ctx.deleteLater()
+            view.deleteLater()
+            return
+        view.set_content(root, ctx, attached)
         if root:
             root.setProperty("widgetName", inst.get("name", self.widget_titles.get(pkg_name, pkg_name)))
             root.setProperty("widgetPackage", pkg_name)
@@ -922,6 +1005,7 @@ class WidgetManagerService(QObject):
 
 
 def main():
+    gc.set_threshold(700, 10, 10)
     try:
         sys.stdout.reconfigure(line_buffering=True)
         sys.stderr.reconfigure(line_buffering=True)
@@ -952,7 +1036,7 @@ def main():
             test_socket.write(b"SHOW_MANAGER\n")
             test_socket.waitForBytesWritten(500)
             test_socket.disconnectFromServer()
-            sys.exit(0)
+            os._exit(0)
 
     QLocalServer.removeServer(single_instance_name)
     local_server = QLocalServer(app)
@@ -1064,6 +1148,7 @@ def main():
         weather_backend.resume_polling()
     if has_music:
         media_backend.start_media_listener()
+        service._ensure_bitchord_bridge().start()
 
     # System Tray Icon
     tray = QSystemTrayIcon(app)
@@ -1140,6 +1225,8 @@ def main():
             pass
         wallpaper_backend.stop()
         media_backend.stop_media_listener()
+        if service.bitchord_bridge is not None:
+            service.bitchord_bridge.stop()
         weather_backend.pause_polling()
         config_mgr.save_configs()
         config_mgr.save_layouts()
@@ -1166,8 +1253,29 @@ def main():
     if "--minimized" not in sys.argv:
         service.showManagerWindow()
 
+    # 60-second RSS memory footprint logger (%APPDATA%\GlassWidgets\memory.log)
+    mem_log_path = os.path.join(get_writable_appdata_dir(), "memory.log")
+    def _log_memory_usage():
+        try:
+            import psutil
+            rss_mb = psutil.Process().memory_info().rss / 1048576.0
+            if os.path.exists(mem_log_path) and os.path.getsize(mem_log_path) > 512 * 1024:
+                with open(mem_log_path, "r", encoding="utf-8", errors="ignore") as f:
+                    tail = f.readlines()[-100:]
+                with open(mem_log_path, "w", encoding="utf-8") as f:
+                    f.writelines(tail)
+            with open(mem_log_path, "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now().isoformat(timespec='seconds')} RSS={rss_mb:.1f} MB widgets={len(service._active_views)}\n")
+        except Exception:
+            pass
+
+    mem_timer = QTimer(app)
+    mem_timer.setInterval(60000)
+    mem_timer.timeout.connect(_log_memory_usage)
+    mem_timer.start()
+    _log_memory_usage()
+
     if "--test" in sys.argv:
-        from PySide6.QtCore import QTimer
         def run_test_exit():
             print("[TEST] All widgets, backends, and shaders loaded successfully!")
             on_quit()

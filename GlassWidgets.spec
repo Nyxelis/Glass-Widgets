@@ -33,6 +33,9 @@ hiddenimports = [
     "win32gui",
     "win32con",
     "win32api",
+    "websockets",
+    "websockets.asyncio.client",
+    "psutil",
 ]
 
 a = Analysis(
@@ -44,7 +47,20 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "unittest", "pydoc"],
+    excludes=[
+        "tkinter", "unittest", "pydoc",
+        "PySide6.QtWebEngineCore", "PySide6.QtWebEngineQuick", "PySide6.QtWebEngineWidgets",
+        "PySide6.QtMultimedia", "PySide6.QtMultimediaWidgets",
+        "PySide6.Qt3DCore", "PySide6.Qt3DRender", "PySide6.Qt3DInput", "PySide6.Qt3DLogic",
+        "PySide6.Qt3DExtras", "PySide6.Qt3DAnimation",
+        "PySide6.QtPdf", "PySide6.QtPdfWidgets", "PySide6.QtQuick3D",
+        "PySide6.QtCharts", "PySide6.QtDataVisualization",
+        "PySide6.QtBluetooth", "PySide6.QtNfc", "PySide6.QtSensors", "PySide6.QtSerialPort",
+        "PySide6.QtPositioning", "PySide6.QtLocation", "PySide6.QtRemoteObjects",
+        "PySide6.QtScxml", "PySide6.QtSql", "PySide6.QtTest",
+        "PySide6.QtDesigner", "PySide6.QtHelp", "PySide6.QtSvgWidgets",
+        "PySide6.QtVirtualKeyboard",
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

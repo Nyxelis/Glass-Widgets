@@ -5,15 +5,6 @@ import org.kde.plasma.private.mpris as Mpris
 Item {
     id: layout
 
-    readonly property var backend: Mpris.GlobalActivePlayer
-
-    Binding {
-        target: layout
-        property: "length"
-        value: layout.backend ? (layout.backend.length ?? 0) : 0
-        restoreMode: Binding.RestoreBindingOrValue
-    }
-
     required property QtObject colors
     property string fontFamily: ""
     property string fontFamilyThin: ""
@@ -165,11 +156,6 @@ Item {
                         var targetUs = r * layout.length
                         progressContainer.barDragPos = targetUs
                         layout.seek(targetUs)
-                        var targetSec = targetUs / 1000000.0
-                        console.log("[QML] Bar seek released, sending:", targetSec)
-                        if (typeof backend !== "undefined" && backend && typeof backend.seekRequested === "function") {
-                            backend.seekRequested(targetSec)
-                        }
                     }
                 }
                 onPositionChanged: function(mouse) { if (pressed) _seek(mouse.x) }

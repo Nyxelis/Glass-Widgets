@@ -4,6 +4,7 @@ import json
 import re
 import stat
 import html
+from contextlib import closing
 from datetime import datetime, date, timedelta
 from PySide6.QtCore import QAbstractListModel, Qt, QModelIndex, Signal, Slot, Property, QDateTime, QByteArray
 try:
@@ -50,7 +51,7 @@ class CalendarBackend(QAbstractListModel):
         return conn
 
     def _init_db(self):
-        with self._get_connection() as conn:
+        with closing(self._get_connection()) as conn, conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -137,7 +138,7 @@ class CalendarBackend(QAbstractListModel):
         self.beginResetModel()
         self._events = []
         try:
-            with self._get_connection() as conn:
+            with closing(self._get_connection()) as conn, conn:
                 cur = conn.cursor()
                 cur.execute("""
                     SELECT id, title, description, start_time, end_time, color, event_type, is_all_day
@@ -267,7 +268,7 @@ class CalendarBackend(QAbstractListModel):
         is_all_day_int = 1 if is_all_day else 0
         new_id = -1
         try:
-            with self._get_connection() as conn:
+            with closing(self._get_connection()) as conn, conn:
                 cur = conn.cursor()
                 cur.execute("""
                     INSERT INTO events (title, description, start_time, end_time, color, event_type, is_all_day)
@@ -285,7 +286,7 @@ class CalendarBackend(QAbstractListModel):
     @Slot(int, result=bool)
     def deleteEvent(self, event_id):
         try:
-            with self._get_connection() as conn:
+            with closing(self._get_connection()) as conn, conn:
                 conn.execute("DELETE FROM events WHERE id = ?", (event_id,))
                 conn.commit()
             self._reload_data()
@@ -327,7 +328,7 @@ class CalendarBackend(QAbstractListModel):
         is_all_day_int = 1 if is_all_day else 0
 
         try:
-            with self._get_connection() as conn:
+            with closing(self._get_connection()) as conn, conn:
                 conn.execute("""
                     UPDATE events
                     SET title = ?, description = ?, start_time = ?, end_time = ?, color = ?, event_type = ?, is_all_day = ?
@@ -369,7 +370,7 @@ class CalendarBackend(QAbstractListModel):
 
         results = []
         try:
-            with self._get_connection() as conn:
+            with closing(self._get_connection()) as conn, conn:
                 cur = conn.cursor()
                 cur.execute("""
                     SELECT id, title, description, start_time, end_time, color, event_type, is_all_day
@@ -412,7 +413,7 @@ class CalendarBackend(QAbstractListModel):
         month_prefix = f"{year:04d}-{month:02d}"
         days = []
         try:
-            with self._get_connection() as conn:
+            with closing(self._get_connection()) as conn, conn:
                 cur = conn.cursor()
                 cur.execute("""
                     SELECT DISTINCT substr(start_time, 9, 2)
@@ -434,7 +435,7 @@ class CalendarBackend(QAbstractListModel):
         """Fast check for event presence on specific year, month (1-based), day."""
         date_str = f"{year:04d}-{month:02d}-{day:02d}"
         try:
-            with self._get_connection() as conn:
+            with closing(self._get_connection()) as conn, conn:
                 cur = conn.cursor()
                 cur.execute("SELECT 1 FROM events WHERE substr(start_time, 1, 10) = ? LIMIT 1", (date_str,))
                 return cur.fetchone() is not None

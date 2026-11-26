@@ -28,7 +28,9 @@ Item {
             y: -windowController.screenRelativeY
             width: windowController.screenWidth
             height: windowController.screenHeight
-            source: wallpaperBackend.wallpaperUrl
+            source: hostRoot.visible ? wallpaperBackend.wallpaperUrl : ""
+            sourceSize.width: windowController.screenWidth
+            sourceSize.height: windowController.screenHeight
             cache: false
             smooth: true
             fillMode: Image.PreserveAspectCrop
@@ -51,8 +53,22 @@ Item {
         target: wallpaperBackend
         function onWallpaperChanged() {
             wallpaperItem.source = ""
+            if (hostRoot.visible)
+                wallpaperItem.source = wallpaperBackend.wallpaperUrl
+        }
+    }
+
+    onVisibleChanged: {
+        if (!visible) {
+            wallpaperItem.source = ""
+        } else if (wallpaperItem.source === "") {
             wallpaperItem.source = wallpaperBackend.wallpaperUrl
         }
+    }
+
+    Component.onDestruction: {
+        wallpaperItem.source = ""
+        widgetLoader.source = ""
     }
 
     // --- Actual Upstream Widget Instance ---
